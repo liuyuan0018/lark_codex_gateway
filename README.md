@@ -1,103 +1,183 @@
-# Feishu Codex Gateway
+<div align="center">
+  <img src="assets/logo.png" width="96" alt="Feishu Codex Gateway logo" />
+  <h1>Feishu Codex Gateway</h1>
+  <p><strong>Turn Feishu conversations into observable, persistent Codex work.</strong></p>
+  <p>
+    Route ordinary chats, topic threads, images, and Bot commands to the right Codex task—then review every step from a local dashboard.
+  </p>
 
-A local Codex plugin that listens for Feishu/Lark events, assigns chats or topic threads to Codex tasks, replies with the Bot identity, and exposes a loopback observability dashboard.
+  <p>
+    <a href="README.md"><strong>English</strong></a> ·
+    <a href="README.zh-CN.md">简体中文</a>
+  </p>
 
-The dashboard uses the existing Feishu `eventId` as the problem ID. All receive, processing, approval, send, and failure records for the same business event share that ID; copy it from event details when reporting a gateway issue or use it in dashboard and MCP event searches. Each traffic record also keeps its separate internal `id`.
+  <p>
+    <a href="https://github.com/liuyuan0018/lark_codex_gateway/actions/workflows/secret-scan.yml"><img src="https://github.com/liuyuan0018/lark_codex_gateway/actions/workflows/secret-scan.yml/badge.svg" alt="Secret scan" /></a>
+    <img src="https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18 or newer" />
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-555" alt="macOS and Windows" />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  </p>
+</div>
 
-Inbound Codex work is queued by Codex session ID. Events for one session run in order, while events assigned to different sessions can run concurrently. The health endpoint reports the active sessions and all currently processing event IDs.
+> [!IMPORTANT]
+> This gateway is local-first. It stores message content, business IDs, Codex task IDs, and downloaded attachments on the host machine. Keep its configuration and runtime directory private.
 
-## Security model
+## Why this gateway?
 
-- The repository contains no Feishu app secret, access token, refresh token, chat ID, user ID, Codex task ID, private prompt, or machine-specific path.
-- `lark-cli` owns Feishu application credentials and user authorization outside this repository.
-- The gateway reads message history with the authorized user identity and sends replies with the Bot identity.
-- The dashboard binds to `127.0.0.1` by default and has no authentication. Do not expose it directly to a LAN or the Internet.
-- Message bodies and business identifiers are stored locally in the gateway state directory. Do not upload its `traffic.ndjson`, `state.json`, or logs.
-- An unconfigured ordinary group is accepted only when a Bot event explicitly mentions the current Bot. Before processing that first request, the gateway adds the group to `allowedChatIds` in the private configuration file. Messages without `@Bot` remain ignored.
+Feishu gives teams real conversations; Codex gives those conversations an execution environment. This gateway connects the two while keeping routing, concurrency, reply policy, and failure diagnosis explicit.
+
+| Capability | What it does |
+| --- | --- |
+| 🧭 Deterministic routing | Maps an ordinary chat or each `chat_id + thread_id` topic to a persistent Codex task. |
+| ⚡ Session-level concurrency | Preserves order inside one Codex task while different tasks run in parallel. |
+| 🖼️ Attachment-aware input | Downloads Feishu images locally and sends them to Codex as image inputs. |
+| 🧠 Context control | Sends only the current message to reused tasks unless the user explicitly asks for earlier chat history. |
+| ✋ Reply approval | Holds selected topic replies for dashboard approval; operators can approve or reject them. |
+| 🤫 Intentional silence | Records `[NO_REPLY]` as a successful Agent decision instead of looking like a dropped message. |
+| 🔍 End-to-end observability | Uses the Feishu `eventId` as the problem ID across receive, queue, Codex, approval, send, and failure stages. |
+| ↩️ Bot message recall | Recalls Bot-sent messages through the gateway and records the result. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Ordinary group<br/>explicit @Bot event"] --> R["Route resolver"]
+    B["Configured topic chat<br/>user-identity polling"] --> R
+    C["Direct MCP send / recall"] --> G["Gateway operations"]
+    R --> Q["Queue keyed by Codex task ID"]
+    Q --> X["Codex App Server"]
+    X --> N{"Reply decision"}
+    N -->|"[NO_REPLY]"| O["Record intentional no-reply"]
+    N -->|"Approval required"| P["Dashboard review"]
+    N -->|"Direct reply"| S["Send as Bot"]
+    P -->|"Approve"| S
+    P -->|"Reject"| J["Record rejection"]
+    G --> S
+    O --> D["Local event timeline"]
+    J --> D
+    S --> D
+```
+
+## Routing rules
+
+| Route | Inbound identity | Requires `@Bot` | Codex task | Reply behavior |
+| --- | --- | --- | --- | --- |
+| Ordinary chat in `allowedChatIds` | Bot event | Yes, for group messages | Created automatically and reused | Sent immediately |
+| Fixed route in `chatRoutes` | Bot event | Yes, for group messages | Existing task from configuration | Sent immediately |
+| Topic chat in `topicChatRoutes` | Authorized user polling | No | One task per `chat_id + thread_id` | Approval by default; configurable per route |
+| Document comment | Feishu event | Event-dependent | Top-level `threadId` | Sent immediately |
+
+An unknown ordinary group is accepted only when its Bot event explicitly mentions the current Bot. The gateway then adds that `chat_id` to the active private configuration. Unknown groups are never added to user-identity polling.
 
 ## Requirements
 
 - macOS or Windows
 - Node.js 18 or newer
-- Codex CLI and Codex desktop app
+- Codex CLI and the Codex desktop app
 - `lark-cli`, configured for a Feishu/Lark application
+- A Feishu Bot that is already a member of every chat it needs to reply to
 
-The bundled MCP server and the manual service command both start the gateway with Node.js. Windows and macOS use the same commands and process-management code; PowerShell is not required.
+## Quick start
 
-## Private configuration
+### 1. Clone the repository
 
-Copy `config.example.json` to one of these private locations and replace every placeholder:
+```bash
+git clone https://github.com/liuyuan0018/lark_codex_gateway.git
+cd lark_codex_gateway
+```
 
-- macOS: `~/Library/Application Support/lark-codex-gateway/config.json`
-- Windows: `%APPDATA%\lark-codex-gateway\config.json`
-- Linux: `${XDG_CONFIG_HOME:-~/.config}/lark-codex-gateway/config.json`
-- Development checkout: `config.local.json`
+### 2. Configure Feishu identities
 
-You can also set `LARK_CODEX_GATEWAY_CONFIG` to an explicit file path. Private configuration files are ignored by Git.
+Configure the application and authorize the user on this machine. The user identity reads configured topic chats; the Bot identity sends replies.
 
-On macOS, restrict the private file after creating it:
+```bash
+lark-cli config init --new
+lark-cli auth login --domain all
+```
+
+Do not copy token files from another computer.
+
+### 3. Create the private gateway configuration
+
+Copy [`config.example.json`](config.example.json) to the platform-specific private location and replace every placeholder:
+
+| Platform | Configuration path |
+| --- | --- |
+| macOS | `~/Library/Application Support/lark-codex-gateway/config.json` |
+| Windows | `%APPDATA%\lark-codex-gateway\config.json` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/lark-codex-gateway/config.json` |
+| Development checkout | `config.local.json` |
+
+You may also set `LARK_CODEX_GATEWAY_CONFIG` to an explicit path. On macOS, restrict the file after creating it:
 
 ```bash
 chmod 600 "$HOME/Library/Application Support/lark-codex-gateway/config.json"
 ```
 
-Important fields:
+### 4. Start the service
 
-- `threadId`: required only when `enableDocComments` is true; it must identify a Codex task that exists on the current machine. Chat and topic routes create their own Codex tasks.
-- `codexWorkdir`: an absolute path, or a path beginning with `~/`, available on the current machine.
-- `codexModel` and `codexReasoningEffort`: the model and reasoning effort passed to Codex App Server when the gateway creates, resumes, or starts a turn. They default to `gpt-5.6-sol` and `high`.
-- `allowedChatIds`: ordinary chats that may trigger Codex. This list is also updated at runtime when an unconfigured group explicitly mentions the Bot. Fixed and topic route chat IDs are accepted automatically.
-- `commandSenderIds`: user `open_id` values allowed to issue an explicit `@Bot` instruction. For these messages Codex must handle and reply to the request even when another group member is already involved; this does not block messages from other senders.
-- `chatRoutes`: fixed ordinary-chat bindings. Each entry sends that chat's accepted Bot event to the configured existing Codex task. `threadTitle` is optional.
-- `topicChatRoutes`: each `chatId + thread_id` pair owns one Codex task. `skillName` optionally names a project-local Skill under `.agents/skills`; the gateway verifies and explicitly invokes it only when creating a new topic task. Keep `initializationPrompt` short and limited to chat identity and topic scope. Set `replyApprovalRequired` to `false` only when that chat may receive Bot replies without dashboard approval; it defaults to `true`.
-- `pollUserMessages`: when enabled, the authorized user reads every new root message and topic reply only from chats configured in `topicChatRoutes`. The first startup records the current time and does not process older messages.
-- `pollIntervalMs`: delay between user-identity history checks; defaults to 5000 ms.
-- `groupContextMessages`: maximum number of earlier group messages attached only when the current request explicitly asks the gateway to read earlier chat or topic history. Reused Codex tasks otherwise receive only the current message. A message sent as a Feishu reply still includes the one message it directly replies to. This limit does not prevent a newly created topic task from taking its one-time initial snapshot.
-- `enableDocComments`: disabled by default so a chat-only deployment does not require Drive comment permissions.
-- `allowUnconfiguredChats`: disabled by default.
+```bash
+node scripts/service.mjs start
+```
 
-Inbound rules are intentionally different by route:
+Open [http://127.0.0.1:47931](http://127.0.0.1:47931) and confirm that the gateway is connected and polling is running.
 
-- Topic chats in `topicChatRoutes` are polled with the user identity and do not require `@Bot`.
-- Before each Codex App Server process starts, the gateway reads the active `model_provider` and
-  its `env_key` from the user's `~/.codex/config.toml`. If that variable is missing from the
-  gateway process, Windows reads it from the user's environment and macOS reads it from
-  `launchctl`; only the child process receives the value. The gateway never writes provider keys
-  into plugin configuration, traffic records, or logs.
-- Ordinary chats in `allowedChatIds` or `chatRoutes` are not polled. Group messages enter through Bot events only when they explicitly mention the current Bot. When the first explicit `@Bot` event comes from an unconfigured group, the gateway writes its `chat_id` to `allowedChatIds` in the active private configuration before forwarding that same message to Codex. A `chatRoutes` entry is used before any saved automatic assignment, and the gateway removes the obsolete automatic assignment from local state without deleting its Codex task.
-- The same chat must not appear in both `chatRoutes` and `topicChatRoutes`.
+### 5. Connect Codex to the MCP server
 
-When a message contains an image, the gateway reads the message with the user identity, downloads each image into the private state directory, and sends the downloaded files to Codex as `localImage` inputs. The prompt also lists the local absolute paths so Codex tools can inspect the same files. Images are limited to eight per message and 20 MiB per image; download failures fail the current request and are recorded in the local dashboard traffic.
+Register the repository's MCP entry point with an absolute path:
 
-When a topic route creates a new Codex task, the gateway also reads every topic message available up to the triggering message and downloads its eligible resources once. It supplies images as `localImage` inputs and lists other downloaded files in the prompt. The initial snapshot is limited to 32 resources and 250 MiB in total; the dashboard marks a snapshot that exceeded a content or resource limit. Later turns receive only new messages unless the current request explicitly asks for history. Topic assignments loaded from an older gateway state are marked `legacy` and are never reinitialized or backfilled during an upgrade.
+```bash
+codex mcp add lark-codex-gateway -- node /absolute/path/to/lark_codex_gateway/scripts/mcp-server.mjs
+```
 
-Use the gateway MCP tools for proactive Bot messages and Bot-message recall. Both operations are recorded in the local traffic log; callers should not invoke `lark-cli` directly when the corresponding gateway tool is available.
+Start a new Codex task after registration so Codex discovers the gateway tools. The repository also contains the `gateway-messaging` and `gateway-operations` Skills under [`skills/`](skills/).
 
-Replies generated for a topic route whose `replyApprovalRequired` is not `false` are not sent immediately. The gateway stores them in `state.json`; open the dashboard and review the text under **待授权发送**. Click **授权发送** to let the Bot send it, or **拒绝授权** to remove it without sending. Both decisions are recorded in dashboard traffic. Pending replies survive gateway restarts until one of those actions succeeds. A route with `replyApprovalRequired: false` sends new replies immediately with the Bot identity; changing this setting does not send or remove replies that are already pending.
+## Configuration
 
-Every message polled from a topic route reaches its Codex task, but the Agent decides whether Bot intervention is useful. Messages that need no Bot reply must return exactly `[NO_REPLY]`. The gateway then writes a successful `no_reply` internal record with the same Feishu `eventId`; the dashboard labels it **Agent 决定不回复**, so operators can distinguish an Agent decision from filtering, processing failure, or outbound delivery failure.
+Start with [`config.example.json`](config.example.json). The most important fields are:
 
-Runtime state is stored outside the repository:
+| Field | Purpose |
+| --- | --- |
+| `codexWorkdir` | Project directory used by Codex. Must exist on the current machine. |
+| `codexModel` | Model passed to Codex App Server. |
+| `codexReasoningEffort` | Reasoning effort used for new and resumed turns. |
+| `allowedChatIds` | Ordinary chats that may enter through explicit Bot events. |
+| `commandSenderIds` | Users whose explicit `@Bot` requests must receive a Codex response. |
+| `chatRoutes` | Fixed ordinary-chat bindings to existing Codex task UUIDs. |
+| `topicChatRoutes` | Topic-chat configuration, including optional project Skill, initialization prompt, and reply approval policy. |
+| `pollUserMessages` | Enables user-identity polling for `topicChatRoutes` only. |
+| `pollIntervalMs` | Delay between topic-chat polls; defaults to `5000`. |
+| `groupContextMessages` | Maximum earlier messages attached when the current message explicitly requests history. |
+| `enableDocComments` | Enables document-comment handling; disabled by default. |
 
-- macOS: `~/Library/Application Support/lark-codex-gateway/`
-- Windows: `%LOCALAPPDATA%\lark-codex-gateway\`
-- Linux: `${XDG_STATE_HOME:-~/.local/state}/lark-codex-gateway/`
+### Topic route example
 
-Do not copy `state.json` between machines unless the referenced Codex task IDs also exist on the destination host. For a normal migration, stop the old gateway and let the new machine create fresh assignments.
+```json
+{
+  "chatId": "oc_replace_with_topic_chat_id",
+  "threadTitlePrefix": "Support topic",
+  "replyApprovalRequired": true,
+  "skillName": "incident-triage",
+  "initializationPrompt": "Act as the support assistant for this chat. Handle one topic per Codex task."
+}
+```
 
-## Feishu authentication
+The configured project Skill must exist at `<codexWorkdir>/.agents/skills/<skillName>/SKILL.md`. A new topic task receives that Skill, the short initialization prompt, and a one-time snapshot of the topic. Later messages reuse the task without repeating old content.
 
-Configure the same Feishu application on the destination machine with `lark-cli config init --new`. Complete a new user authorization on that machine; do not copy token files from another computer. The authorized user must be able to read every configured chat, and the Bot must be present in each chat it replies to.
+## Dashboard and operations
 
-## Running on Windows and macOS
+The loopback dashboard shows:
 
-1. Install Node.js, Codex, and `lark-cli`.
-2. Create the private configuration described above.
-3. Install the plugin from the selected Codex marketplace.
-4. Start a new Codex task so the updated MCP server is loaded.
-5. Call the gateway status tool or open `http://127.0.0.1:47931` after the gateway reports connected.
+- gateway, polling, and Codex queue health;
+- active Codex tasks and current Feishu event IDs;
+- inbound, internal, outbound, ignored, and failed records;
+- downloaded attachment counts and sizes;
+- pending replies with **Approve** and **Reject** actions;
+- one-click copying of the Feishu `eventId` problem ID.
 
-The same service commands work in PowerShell, Command Prompt, Terminal, and other shells:
+The MCP server exposes tools for status, event search, proactive Bot messages, and Bot-message recall. Proactive operations still enforce `allowedChatIds`, `chatRoutes`, and `topicChatRoutes`.
+
+### Service commands
 
 ```bash
 node scripts/service.mjs start
@@ -106,22 +186,65 @@ node scripts/service.mjs restart
 node scripts/service.mjs stop
 ```
 
-`start` returns the existing healthy process when it already uses the current version and configuration. `restart` always stops the existing gateway and starts a new process. Background stdout and stderr files are written under the configured state directory's `logs` folder.
-
-For foreground diagnostics on either operating system:
+For foreground diagnostics:
 
 ```bash
 node scripts/run-gateway.mjs
 ```
 
-Run only one gateway for a Feishu application during migration. Stop the old host before starting the new host so local assignment state cannot diverge.
+## Message context and attachments
 
-## Public release checklist
+- Reused Codex tasks receive only the current Feishu message by default.
+- A direct Feishu reply includes the one message it replies to.
+- Earlier group or topic history is included only when the current message explicitly asks for it, such as “use the logs above” or `#带上下文`.
+- New topic tasks receive a one-time initial snapshot, limited to 32 resources and 250 MiB.
+- A message can provide up to eight images, each limited to 20 MiB.
+- Downloaded files remain inside the private gateway state directory.
 
-1. Confirm `config.local.json`, `config.json`, `.env*`, logs, state, and traffic files are untracked.
-2. Run a secret scanner against the complete Git history, not only the current files.
-3. Review images and generated artifacts for chat content, task IDs, paths, account names, and internal URLs.
-4. Publish from a clean repository if the source previously contained credentials or private configuration.
-5. If a secret was ever committed, rotate it first; deleting the current file does not remove it from Git history.
+## Provider environment
 
-The exact token `[NO_REPLY]` is the gateway protocol for a completed topic-message turn that intentionally produces no Bot reply.
+Before Codex starts, the gateway reads the active `model_provider` and its `env_key` from `~/.codex/config.toml`. If the variable is missing from the gateway process, Windows reads it from the user environment and macOS reads it from `launchctl`. Only the Codex child process receives the value.
+
+Provider keys are never written to gateway configuration, event records, or logs.
+
+## Runtime data and migration
+
+| Platform | Runtime directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/lark-codex-gateway/` |
+| Windows | `%LOCALAPPDATA%\lark-codex-gateway\` |
+| Linux | `${XDG_STATE_HOME:-~/.local/state}/lark-codex-gateway/` |
+
+The directory contains local state, traffic history, logs, and downloaded attachments. Do not commit or share it.
+
+For a normal machine migration:
+
+1. Stop the old gateway.
+2. Install and authorize `lark-cli` on the new machine.
+3. Copy only the private configuration, then update machine-specific paths and Codex task UUIDs.
+4. Do not copy `state.json` unless the referenced Codex tasks also exist on the new host.
+5. Start the new gateway and keep only one host active for the same Feishu application.
+
+## Security
+
+- The dashboard binds to `127.0.0.1` by default and has no authentication. Never expose it directly to a LAN or the Internet.
+- Keep Feishu credentials in `lark-cli`; never put them in this repository.
+- Keep private prompts, chat IDs, user IDs, task IDs, message traffic, and downloaded resources out of public issues.
+- Run a secret scanner against the complete Git history before publishing a fork.
+- If a credential was committed, rotate or revoke it before rewriting Git history.
+
+See [SECURITY.md](SECURITY.md) for reporting guidance.
+
+## Development
+
+Run syntax checks and the local test suite:
+
+```bash
+npm --prefix scripts/gateway run check
+```
+
+The repository's GitHub workflow scans every push and pull request with Gitleaks.
+
+## License
+
+[MIT](LICENSE)

@@ -79,12 +79,14 @@ flowchart LR
 
 ## 快速开始
 
-### 1. 克隆仓库
+### 1. 安装 Codex Plugin
 
 ```bash
-git clone https://github.com/liuyuan0018/lark_codex_gateway.git
-cd lark_codex_gateway
+codex plugin marketplace add liuyuan0018/lark_codex_gateway --ref main
+codex plugin add lark-codex-gateway@lark-codex-gateway
 ```
+
+添加 marketplace 后重启 Codex 桌面应用，并新建一个 Codex 任务，让应用加载 Plugin 中的 Skill 和网关工具。
 
 ### 2. 配置飞书身份
 
@@ -114,23 +116,20 @@ lark-cli auth login --domain all
 chmod 600 "$HOME/Library/Application Support/lark-codex-gateway/config.json"
 ```
 
-### 4. 启动服务
+### 4. 通过 Codex 启动
 
-```bash
-node scripts/service.mjs start
-```
+新建一个 Codex 任务并输入“查看当前飞书网关状态”。第一次调用 Plugin 的 MCP 工具时，Plugin 会启动本地网关。
 
 打开 [http://127.0.0.1:47931](http://127.0.0.1:47931)，确认网关已连接且轮询正在运行。
 
-### 5. 把 MCP 服务注册到 Codex
-
-使用仓库的绝对路径注册 MCP 入口：
+后续版本更新：
 
 ```bash
-codex mcp add lark-codex-gateway -- node /absolute/path/to/lark_codex_gateway/scripts/mcp-server.mjs
+codex plugin marketplace upgrade lark-codex-gateway
+codex plugin add lark-codex-gateway@lark-codex-gateway
 ```
 
-注册后新建一个 Codex 任务，让 Codex 重新发现网关工具。仓库的 [`skills/`](skills/) 目录还包含 `gateway-messaging` 和 `gateway-operations` 两个 Skill。
+更新后重启 Codex 桌面应用，并使用新任务。
 
 ## 配置说明
 

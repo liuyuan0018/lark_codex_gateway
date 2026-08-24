@@ -1,0 +1,21 @@
+{
+  "name": "lark-codex-gateway",
+  "interface": {
+    "displayName": "Feishu Codex Gateway"
+  },
+  "plugins": [
+    {
+      "name": "lark-codex-gateway",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/liuyuan0018/lark_codex_gateway.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

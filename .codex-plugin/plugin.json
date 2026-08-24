@@ -1,10 +1,13 @@
 {
   "name": "lark-codex-gateway",
-  "version": "0.1.0+codex.20260824074629",
+  "version": "0.1.0+codex.20260824105549",
   "description": "Send, recall, run, and observe messages through a local Feishu-to-Codex gateway.",
   "author": {
     "name": "Open source contributors"
   },
+  "homepage": "https://github.com/liuyuan0018/lark_codex_gateway",
+  "repository": "https://github.com/liuyuan0018/lark_codex_gateway",
+  "license": "MIT",
   "keywords": [
     "feishu",
     "lark",
@@ -27,8 +30,7 @@
     "defaultPrompt": [
       "Show the current Feishu gateway status",
       "Send this update to a Feishu group through the gateway",
-      "Summarize recent inbound and outbound gateway traffic",
-      "Give me the Feishu gateway dashboard URL"
+      "Summarize recent inbound and outbound gateway traffic"
     ],
     "brandColor": "#20242B",
     "composerIcon": "./assets/logo.png",

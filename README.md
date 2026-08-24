@@ -79,12 +79,14 @@ An unknown ordinary group is accepted only when its Bot event explicitly mention
 
 ## Quick start
 
-### 1. Clone the repository
+### 1. Install the Codex Plugin
 
 ```bash
-git clone https://github.com/liuyuan0018/lark_codex_gateway.git
-cd lark_codex_gateway
+codex plugin marketplace add liuyuan0018/lark_codex_gateway --ref main
+codex plugin add lark-codex-gateway@lark-codex-gateway
 ```
+
+Restart the Codex desktop app after adding the marketplace. Use a new Codex task so the installed Skills and gateway tools are loaded.
 
 ### 2. Configure Feishu identities
 
@@ -114,23 +116,20 @@ You may also set `LARK_CODEX_GATEWAY_CONFIG` to an explicit path. On macOS, rest
 chmod 600 "$HOME/Library/Application Support/lark-codex-gateway/config.json"
 ```
 
-### 4. Start the service
+### 4. Start through Codex
 
-```bash
-node scripts/service.mjs start
-```
+Open a new Codex task and ask `Show the current Feishu gateway status`. The installed Plugin starts the local gateway when its MCP tool is first used.
 
 Open [http://127.0.0.1:47931](http://127.0.0.1:47931) and confirm that the gateway is connected and polling is running.
 
-### 5. Connect Codex to the MCP server
-
-Register the repository's MCP entry point with an absolute path:
+To install a later release:
 
 ```bash
-codex mcp add lark-codex-gateway -- node /absolute/path/to/lark_codex_gateway/scripts/mcp-server.mjs
+codex plugin marketplace upgrade lark-codex-gateway
+codex plugin add lark-codex-gateway@lark-codex-gateway
 ```
 
-Start a new Codex task after registration so Codex discovers the gateway tools. The repository also contains the `gateway-messaging` and `gateway-operations` Skills under [`skills/`](skills/).
+Restart the Codex desktop app and use a new task after updating.
 
 ## Configuration
 

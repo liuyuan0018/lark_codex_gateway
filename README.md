@@ -1,9 +1,9 @@
 <div align="center">
   <img src="assets/logo.png" width="96" alt="Feishu Codex Gateway logo" />
   <h1>Feishu Codex Gateway</h1>
-  <p><strong>Turn Feishu conversations into observable, persistent Codex work.</strong></p>
+  <p><strong>Codex Agent integration and management for Feishu conversations.</strong></p>
   <p>
-    Route ordinary chats, topic threads, images, and Bot commands to the right Codex task—then review every step from a local dashboard.
+    Provides message routing, Agent task lifecycle management, reply governance, and end-to-end observability.
   </p>
 
   <p>
@@ -22,40 +22,49 @@
 > [!IMPORTANT]
 > This gateway is local-first. It stores message content, business IDs, Codex task IDs, and downloaded attachments on the host machine. Keep its configuration and runtime directory private.
 
-## Why this gateway?
+## Purpose and scope
 
-Feishu gives teams real conversations; Codex gives those conversations an execution environment. This gateway connects the two while keeping routing, concurrency, reply policy, and failure diagnosis explicit.
+This Plugin establishes a managed connection between Feishu conversations and Codex Agents. Standardized routing and task lifecycle management allow existing Agents, Skills, and tools to serve multiple Feishu conversations. The Plugin does not replace `lark-cli`, duplicate general Feishu API capabilities, or contain domain-specific diagnostic logic.
+
+## Responsibility boundaries
+
+| Component | Responsibility |
+| --- | --- |
+| `lark-cli` | Authenticates user and Bot identities and provides atomic Feishu operations: receive and read messages, download resources, send or recall messages, and call Feishu OpenAPI. |
+| Gateway Plugin | Maps chats and topics to Codex tasks, manages task reuse and queues, prepares message context, controls replies, and records every stage by `eventId`. |
+| Codex Agent | Interprets intent, determines whether a response is required, investigates the request, and executes the requested work. |
+| Project Skills and tools | Provide domain-specific workflows and execution capabilities. Domain behavior is defined here rather than in the gateway. |
+
+The gateway delegates Feishu operations to `lark-cli`. Its send and recall tools are controlled gateway entry points that add route restrictions, approval, idempotency, and observability to the underlying `lark-cli` operations.
+
+## Core responsibilities
 
 | Capability | What it does |
 | --- | --- |
 | 🧭 Deterministic routing | Maps an ordinary chat or each `chat_id + thread_id` topic to a persistent Codex task. |
 | ⚡ Session-level concurrency | Preserves order inside one Codex task while different tasks run in parallel. |
-| 🖼️ Attachment-aware input | Downloads Feishu images locally and sends them to Codex as image inputs. |
+| 🖼️ Attachment handoff | Uses `lark-cli` to download Feishu resources, then gives their local paths to the Agent. |
 | 🧠 Context control | Sends only the current message to reused tasks unless the user explicitly asks for earlier chat history. |
 | ✋ Reply approval | Holds selected topic replies for dashboard approval; operators can approve or reject them. |
 | 🤫 Intentional silence | Records `[NO_REPLY]` as a successful Agent decision instead of looking like a dropped message. |
 | 🔍 End-to-end observability | Uses the Feishu `eventId` as the problem ID across receive, queue, Codex, approval, send, and failure stages. |
-| ↩️ Bot message recall | Recalls Bot-sent messages through the gateway and records the result. |
+| ↩️ Managed Bot operations | Applies gateway policy and observability when `lark-cli` sends or recalls Bot messages. |
 
-## How it works
+## Architecture and message flow
 
 ```mermaid
 flowchart LR
-    A["Ordinary group<br/>explicit @Bot event"] --> R["Route resolver"]
-    B["Configured topic chat<br/>user-identity polling"] --> R
-    C["Direct MCP send / recall"] --> G["Gateway operations"]
-    R --> Q["Queue keyed by Codex task ID"]
-    Q --> X["Codex App Server"]
-    X --> N{"Reply decision"}
-    N -->|"[NO_REPLY]"| O["Record intentional no-reply"]
-    N -->|"Approval required"| P["Dashboard review"]
-    N -->|"Direct reply"| S["Send as Bot"]
-    P -->|"Approve"| S
-    P -->|"Reject"| J["Record rejection"]
-    G --> S
-    O --> D["Local event timeline"]
-    J --> D
-    S --> D
+    F["Feishu conversations"] <--> L["lark-cli<br/>Feishu identities and API operations"]
+    L --> G["Gateway<br/>routing, Agent tasks, queues, context"]
+    G --> A["Codex Agent<br/>analysis and execution"]
+    A --> K["Project Skills and tools"]
+    A --> R{"Reply decision"}
+    R -->|"[NO_REPLY]"| O["Record no reply"]
+    R -->|"Reply"| P["Gateway policy<br/>approval and destination checks"]
+    P --> L
+    G --> D["Dashboard<br/>eventId timeline"]
+    O --> D
+    P --> D
 ```
 
 ## Routing rules
@@ -90,7 +99,7 @@ Restart the Codex desktop app after adding the marketplace. Use a new Codex task
 
 ### 2. Configure Feishu identities
 
-Configure the application and authorize the user on this machine. The user identity reads configured topic chats; the Bot identity sends replies.
+Configure the application and authorize the user on this machine. `lark-cli` owns both identities: the user identity reads configured topic chats and the Bot identity sends replies. The gateway does not store their credentials.
 
 ```bash
 lark-cli config init --new
@@ -174,7 +183,7 @@ The loopback dashboard shows:
 - pending replies with **Approve** and **Reject** actions;
 - one-click copying of the Feishu `eventId` problem ID.
 
-The MCP server exposes tools for status, event search, proactive Bot messages, and Bot-message recall. Proactive operations still enforce `allowedChatIds`, `chatRoutes`, and `topicChatRoutes`.
+The MCP server exposes gateway-management tools for status, event search, proactive Bot messages, and Bot-message recall. Sending and recall still run through `lark-cli`; the gateway adds `allowedChatIds` / route enforcement and observable results. Use the existing `lark-cli` Skills directly for general Feishu operations that do not require gateway routing or reply management.
 
 ### Service commands
 

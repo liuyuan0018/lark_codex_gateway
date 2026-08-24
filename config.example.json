@@ -1,0 +1,33 @@
+{
+  "threadId": "",
+  "codexWorkdir": "~/Projects/your-project",
+  "codexModel": "gpt-5.6-sol",
+  "codexReasoningEffort": "high",
+  "dashboardHost": "127.0.0.1",
+  "dashboardPort": 47931,
+  "enableDocComments": false,
+  "replyEnabled": true,
+  "pollUserMessages": false,
+  "pollIntervalMs": 5000,
+  "allowUnconfiguredChats": false,
+  "allowedChatIds": [
+    "oc_replace_with_allowed_chat_id"
+  ],
+  "commandSenderIds": [],
+  "chatRoutes": [
+    {
+      "chatId": "oc_replace_with_fixed_chat_id",
+      "threadId": "replace-with-codex-thread-uuid",
+      "threadTitle": "Optional fixed task title"
+    }
+  ],
+  "topicChatRoutes": [
+    {
+      "chatId": "oc_replace_with_topic_chat_id",
+      "threadTitlePrefix": "Feishu topic",
+      "replyApprovalRequired": true,
+      "skillName": "replace-with-project-skill-name",
+      "initializationPrompt": "Describe only the assistant identity and the scope of one topic."
+    }
+  ]
+}

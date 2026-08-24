@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>飞书网关观察台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260822-dynamic-allowed-chats">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/logo.png" alt="" width="36" height="36">
+        <div>
+          <h1>飞书网关观察台</h1>
+          <p id="threadLabel">等待网关状态</p>
+        </div>
+      </div>
+      <div class="connection" id="connectionState" data-state="starting">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="connectionText">连接中</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="metric-band" aria-label="运行指标">
+        <div class="metric">
+          <span>运行时间</span>
+          <strong id="uptimeValue">--</strong>
+        </div>
+        <div class="metric">
+          <span>入站</span>
+          <strong id="inboundValue">0</strong>
+        </div>
+        <div class="metric">
+          <span>出站</span>
+          <strong id="outboundValue">0</strong>
+        </div>
+        <div class="metric">
+          <span>忽略</span>
+          <strong id="ignoredValue">0</strong>
+        </div>
+        <div class="metric metric-error">
+          <span>错误</span>
+          <strong id="errorValue">0</strong>
+        </div>
+        <div class="metric">
+          <span>队列</span>
+          <strong id="queueValue">0</strong>
+        </div>
+        <div class="metric metric-pending">
+          <span>待授权</span>
+          <strong id="pendingValue">0</strong>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="事件筛选">
+        <div class="segments" role="group" aria-label="方向">
+          <button type="button" class="segment is-active" data-direction="all">全部</button>
+          <button type="button" class="segment" data-direction="inbound">入站</button>
+          <button type="button" class="segment" data-direction="outbound">出站</button>
+          <button type="button" class="segment" data-direction="internal">系统</button>
+        </div>
+        <label class="field compact-field">
+          <span>类型</span>
+          <select id="kindFilter">
+            <option value="all">全部类型</option>
+            <option value="message">聊天消息</option>
+            <option value="doc_comment">文档评论</option>
+            <option value="system">系统</option>
+          </select>
+        </label>
+        <label class="field search-field">
+          <span>搜索</span>
+          <input id="searchInput" type="search" placeholder="正文、任务或问题 ID" autocomplete="off">
+        </label>
+        <label class="live-toggle">
+          <input id="liveToggle" type="checkbox" checked>
+          <span>实时</span>
+        </label>
+        <button type="button" class="command" id="refreshButton">刷新</button>
+      </section>
+
+      <section class="approval-panel" id="approvalPanel" hidden>
+        <div class="approval-heading">
+          <div>
+            <h2>待授权发送</h2>
+            <p>授权发送会由 Bot 发出；拒绝授权会移除且不发送。</p>
+          </div>
+          <strong id="approvalCount">0</strong>
+        </div>
+        <div class="approval-list" id="approvalList"></div>
+      </section>
+
+      <section class="traffic-layout">
+        <div class="traffic-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>消息流</h2>
+              <p id="resultSummary">0 条记录</p>
+            </div>
+            <span id="lastUpdated">--</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>方向</th>
+                  <th>类型</th>
+                  <th>阶段</th>
+                  <th>内容</th>
+                  <th>Codex 任务</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="trafficBody"></tbody>
+            </table>
+            <div class="empty-state" id="emptyState" hidden>
+              <strong>暂无匹配记录</strong>
+              <span>新事件到达后会自动出现</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="detail-panel" id="detailPanel" aria-label="事件详情">
+          <div class="detail-placeholder" id="detailPlaceholder">
+            <strong>选择一条记录</strong>
+            <span>查看完整正文和业务标识</span>
+          </div>
+          <div id="detailContent" hidden>
+            <div class="detail-heading">
+              <div>
+                <span class="eyebrow" id="detailDirection">--</span>
+                <h2 id="detailTitle">事件详情</h2>
+              </div>
+              <div class="detail-actions">
+                <button type="button" class="copy-problem-id" id="copyProblemId" hidden>复制问题 ID</button>
+                <button type="button" class="close-detail" id="closeDetail" aria-label="关闭详情" title="关闭详情">×</button>
+              </div>
+            </div>
+            <dl class="detail-grid" id="detailGrid"></dl>
+            <section class="content-block">
+              <h3>正文</h3>
+              <pre id="detailMessage"></pre>
+            </section>
+            <section class="content-block">
+              <h3>元数据</h3>
+              <pre id="detailMetadata"></pre>
+            </section>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <template id="trafficRowTemplate">
+      <tr tabindex="0">
+        <td data-label="时间" class="time-cell"></td>
+        <td data-label="方向"><span class="direction-pill"></span></td>
+        <td data-label="类型" class="kind-cell"></td>
+        <td data-label="阶段" class="stage-cell"></td>
+        <td data-label="内容" class="message-cell"><strong></strong><span></span></td>
+        <td data-label="Codex 任务" class="thread-cell"><strong></strong><span></span></td>
+        <td data-label="状态"><span class="status-pill"></span></td>
+      </tr>
+    </template>
+    <template id="approvalItemTemplate">
+      <article class="approval-item">
+        <div class="approval-copy">
+          <div class="approval-meta"></div>
+          <pre class="approval-content"></pre>
+          <p class="approval-error" hidden></p>
+        </div>
+        <div class="approval-actions">
+          <button type="button" class="reject-button">拒绝授权</button>
+          <button type="button" class="approve-button">授权发送</button>
+        </div>
+      </article>
+    </template>
+    <script type="module" src="/app.js?v=20260822-pending-reject-v2"></script>
+  </body>
+</html>

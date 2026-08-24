@@ -1,0 +1,13 @@
+{
+  "name": "lark-codex-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ../run-gateway.mjs",
+    "service": "node ../service.mjs",
+    "check": "node --check ../config.mjs && node --check ../run-gateway.mjs && node --check ../service-manager.mjs && node --check ../service.mjs && node --check ../mcp-server.mjs && node --check gateway.mjs && node --check observability.mjs && node --check codex_app_server.mjs && node --check context_policy.mjs && node --check reply_policy.mjs && node --check topic_setup.mjs && node --check keyed_queue.mjs && node --check public/app.js && node --test *.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

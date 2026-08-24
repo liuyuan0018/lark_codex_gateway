@@ -1,0 +1,37 @@
+{
+  "name": "lark-codex-gateway",
+  "version": "0.1.0+codex.20260824074629",
+  "description": "Send, recall, run, and observe messages through a local Feishu-to-Codex gateway.",
+  "author": {
+    "name": "Open source contributors"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "gateway",
+    "observability",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Feishu Codex Gateway",
+    "shortDescription": "Send and inspect Feishu traffic through Codex",
+    "longDescription": "Starts the local Feishu-to-Codex gateway and its observability dashboard, then exposes proactive Bot messaging, Bot-message recall, gateway health, and traffic history as Codex tools.",
+    "developerName": "Open source contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Show the current Feishu gateway status",
+      "Send this update to a Feishu group through the gateway",
+      "Summarize recent inbound and outbound gateway traffic",
+      "Give me the Feishu gateway dashboard URL"
+    ],
+    "brandColor": "#20242B",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}

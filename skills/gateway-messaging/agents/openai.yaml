@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feishu Gateway Messaging"
+  short_description: "Send or recall observable Bot messages through the Feishu gateway"
+  default_prompt: "Use $gateway-messaging to send or recall this Feishu Bot message through the gateway."

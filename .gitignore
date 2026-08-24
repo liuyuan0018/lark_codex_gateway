@@ -1,0 +1,25 @@
+# Private machine configuration
+config.local.json
+config.json
+.env
+.env.*
+
+# Local credentials and runtime data
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+state.json
+traffic.ndjson
+logs/
+lark-im-resources/
+.lark-codex-gateway-downloads/
+
+# Tooling
+node_modules/
+.DS_Store
+Thumbs.db
+
+# The old screenshot contains a local task identifier; create a sanitized image before publishing one.
+assets/dashboard.png

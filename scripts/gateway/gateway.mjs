@@ -7,7 +7,10 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import { createCodexAppServerThread, runCodexAppServerTurn } from "./codex_app_server.mjs";
+import { runWithActiveWriterRetry } from "./active_writer_retry.mjs";
+import { terminateChildProcess } from "./child_shutdown.mjs";
 import { messageRequestsGroupHistory } from "./context_policy.mjs";
+import { createInboundDeduplicator } from "./inbound_dedup.mjs";
 import { createKeyedQueue } from "./keyed_queue.mjs";
 import { createObservability } from "./observability.mjs";
 import {
@@ -31,8 +34,8 @@ const pluginManifest = JSON.parse(
 
 const MESSAGE_EVENT_TYPE = "im.message.receive_v1";
 const DOC_COMMENT_EVENT_TYPE = "drive.notice.comment_add_v1";
-const STATE_VERSION = 5;
-const MAX_SAVED_EVENT_IDS = 1000;
+const STATE_VERSION = 6;
+const MAX_SAVED_DEDUP_IDS = 1000;
 const COMMENT_FETCH_ATTEMPTS = 6;
 const COMMENT_FETCH_DELAY_MS = 1000;
 const COMMENT_FILE_TYPES = new Set(["doc", "sheet", "file", "docx", "slides", "bitable"]);
@@ -216,6 +219,9 @@ const config = {
   groupContextMessages: readPositiveInteger("GATEWAY_GROUP_CONTEXT_MESSAGES", 20),
   maxContextChars: readPositiveInteger("GATEWAY_MAX_CONTEXT_CHARS", 20000),
   codexTimeoutMs: readPositiveInteger("CODEX_TIMEOUT_MS", 30 * 60 * 1000),
+  activeWriterMaxAttempts: readPositiveInteger("CODEX_ACTIVE_WRITER_MAX_ATTEMPTS", 8),
+  activeWriterInitialDelayMs: readPositiveInteger("CODEX_ACTIVE_WRITER_INITIAL_DELAY_MS", 1000),
+  activeWriterMaxDelayMs: readPositiveInteger("CODEX_ACTIVE_WRITER_MAX_DELAY_MS", 15000),
   reconnectDelayMs: readPositiveInteger("GATEWAY_RECONNECT_DELAY_MS", 5000),
   readyTimeoutMs: readPositiveInteger("LARK_READY_TIMEOUT_MS", 30000),
   dashboardHost: process.env.GATEWAY_DASHBOARD_HOST || "127.0.0.1",
@@ -251,22 +257,24 @@ const statePath = path.join(config.stateDir, "state.json");
 let state = {
   version: STATE_VERSION,
   eventIds: [],
+  messageIds: [],
   chatThreads: {},
   topicThreads: {},
   pollCursors: {},
   pendingOutbound: {},
 };
-let eventIdSet = new Set();
+let inboundDeduplicator = createInboundDeduplicator({ maxSavedIds: MAX_SAVED_DEDUP_IDS });
 const routeQueue = createKeyedQueue();
 const sessionQueue = createKeyedQueue();
 const inboundTasks = new Set();
-const queuedEventIds = new Set();
 let outboundTail = Promise.resolve();
 let stateWriteTail = Promise.resolve();
 let configWriteTail = Promise.resolve();
 let stateWriteSequence = 0;
 let larkConsumer = null;
 let shuttingDown = false;
+let shutdownConsumerPromise = null;
+let shutdownConsumerError = null;
 let observability = null;
 let pollingLoop = null;
 const verifiedTopicChatIds = new Set();
@@ -342,6 +350,7 @@ function getRuntimeStatus() {
     startedAt: runtimeStatus.startedAt,
     uptimeMs: Date.now() - new Date(runtimeStatus.startedAt).getTime(),
     processId: process.pid,
+    subscriptionProcessId: larkConsumer?.pid || null,
     gatewayVersion: pluginManifest.version,
     connectionState: runtimeStatus.connectionState,
     queueDepth: runtimeStatus.queueDepth + runtimeStatus.outboundQueueDepth,
@@ -441,7 +450,7 @@ async function loadState() {
   await fs.mkdir(config.stateDir, { recursive: true });
   try {
     const parsed = JSON.parse(await fs.readFile(statePath, "utf8"));
-    if ([1, 2, 3, 4, STATE_VERSION].includes(parsed.version) && Array.isArray(parsed.eventIds)) {
+    if ([1, 2, 3, 4, 5, STATE_VERSION].includes(parsed.version) && Array.isArray(parsed.eventIds)) {
       const chatThreads = {};
       if (parsed.version >= 2 && parsed.chatThreads && typeof parsed.chatThreads === "object") {
         for (const [chatId, assignment] of Object.entries(parsed.chatThreads)) {
@@ -517,7 +526,10 @@ async function loadState() {
       }
       state = {
         version: STATE_VERSION,
-        eventIds: parsed.eventIds.filter((id) => typeof id === "string").slice(-MAX_SAVED_EVENT_IDS),
+        eventIds: parsed.eventIds.filter((id) => typeof id === "string").slice(-MAX_SAVED_DEDUP_IDS),
+        messageIds: Array.isArray(parsed.messageIds)
+          ? parsed.messageIds.filter((id) => typeof id === "string").slice(-MAX_SAVED_DEDUP_IDS)
+          : [],
         chatThreads,
         topicThreads,
         pollCursors,
@@ -535,7 +547,11 @@ async function loadState() {
       removedAutomaticAssignments = true;
     }
   }
-  eventIdSet = new Set(state.eventIds);
+  inboundDeduplicator = createInboundDeduplicator({
+    eventIds: state.eventIds,
+    messageIds: state.messageIds,
+    maxSavedIds: MAX_SAVED_DEDUP_IDS,
+  });
   if (removedAutomaticAssignments) {
     await saveState();
   }
@@ -553,21 +569,15 @@ async function saveState() {
   await writePromise;
 }
 
-async function rememberEvent(eventId) {
-  eventIdSet.add(eventId);
-  state.eventIds.push(eventId);
-  if (state.eventIds.length > MAX_SAVED_EVENT_IDS) {
-    const removedIds = state.eventIds.splice(0, state.eventIds.length - MAX_SAVED_EVENT_IDS);
-    for (const removedId of removedIds) {
-      eventIdSet.delete(removedId);
-    }
-  }
-  await saveState();
+function syncInboundDedupState() {
+  const snapshot = inboundDeduplicator.snapshot();
+  state.eventIds = snapshot.eventIds;
+  state.messageIds = snapshot.messageIds;
 }
 
-async function forgetEvent(eventId) {
-  eventIdSet.delete(eventId);
-  state.eventIds = state.eventIds.filter((savedId) => savedId !== eventId);
+async function rememberInboundEvent(event) {
+  inboundDeduplicator.remember(event);
+  syncInboundDedupState();
   await saveState();
 }
 
@@ -1870,7 +1880,7 @@ async function loadEventContext(event) {
 }
 
 async function askCodex(event, context) {
-  const result = await runCodexAppServerTurn({
+  const retryResult = await runWithActiveWriterRetry(() => runCodexAppServerTurn({
     command: codexCli.command,
     prefixArgs: codexCli.prefixArgs,
     threadId: event.codex_thread_id,
@@ -1880,11 +1890,41 @@ async function askCodex(event, context) {
     model: config.codexModel,
     effort: config.codexReasoningEffort,
     timeoutMs: config.codexTimeoutMs,
+  }), {
+    maxAttempts: config.activeWriterMaxAttempts,
+    initialDelayMs: config.activeWriterInitialDelayMs,
+    maxDelayMs: config.activeWriterMaxDelayMs,
+    onRetry: ({ attempt, nextAttempt, delayMs, elapsedMs }) => {
+      observe({
+        ...eventObservationFields(event),
+        direction: "internal",
+        stage: "codex_retry",
+        status: "processing",
+        summary: "Codex session 有活动写入者，稍后重试",
+        retryAttempt: attempt,
+        nextRetryAttempt: nextAttempt,
+        retryDelayMs: delayMs,
+        retryElapsedMs: elapsedMs,
+      });
+      log("info", "Codex session 有活动写入者，稍后重试", {
+        eventId: event.event_id,
+        threadId: event.codex_thread_id,
+        retryAttempt: attempt,
+        nextRetryAttempt: nextAttempt,
+        retryDelayMs: delayMs,
+        retryElapsedMs: elapsedMs,
+      });
+    },
   });
+  const result = retryResult.value;
+  event.codex_retry_attempts = retryResult.attempts;
+  event.codex_retry_elapsed_ms = retryResult.elapsedMs;
   log("info", "Codex App Server 回合完成", {
     eventId: event.event_id,
     threadId: result.threadId,
     turnId: result.turnId,
+    attempts: retryResult.attempts,
+    retryElapsedMs: retryResult.elapsedMs,
   });
   return result.response;
 }
@@ -2467,7 +2507,8 @@ async function processEvent(event, options = {}) {
     resolutionError = null,
     queueWaitMs = 0,
   } = options;
-  if (!preflightDone && eventIdSet.has(event.event_id)) {
+  const duplicateReason = !preflightDone ? inboundDeduplicator.duplicateReason(event) : "";
+  if (duplicateReason) {
     observe({
       ...eventObservationFields(event),
       direction: "inbound",
@@ -2475,7 +2516,7 @@ async function processEvent(event, options = {}) {
       status: "ignored",
       summary: "重复事件",
       content: event.content || "",
-      reason: "duplicate_event",
+      reason: duplicateReason,
     });
     log("info", "忽略重复事件", {
       eventId: event.event_id,
@@ -2553,6 +2594,7 @@ async function processEvent(event, options = {}) {
   let context = null;
   let replyIds = [];
   try {
+    await rememberInboundEvent(event);
     if (resolutionError) {
       throw resolutionError;
     }
@@ -2562,7 +2604,6 @@ async function processEvent(event, options = {}) {
     if (event.source !== "doc_comment") {
       recordInbound("accepted", event.content, "飞书聊天请求");
     }
-    await rememberEvent(event.event_id);
     observe({
       ...eventObservationFields(event),
       direction: "internal",
@@ -2632,6 +2673,8 @@ async function processEvent(event, options = {}) {
       status: "success",
       summary: "Codex 处理完成",
       durationMs: Date.now() - startedAt,
+      retryAttempts: event.codex_retry_attempts,
+      retryElapsedMs: event.codex_retry_elapsed_ms,
     });
   } catch (error) {
     if (event.codex_topic_setup_started) {
@@ -2645,9 +2688,6 @@ async function processEvent(event, options = {}) {
     if (!inboundRecorded) {
       recordInbound("error", "", "读取飞书请求失败", "context_unavailable");
     }
-    await forgetEvent(event.event_id).catch((stateError) => {
-      log("error", "恢复事件状态失败", { eventId: event.event_id, error: stateError.message });
-    });
     observe({
       ...eventObservationFields(event),
       direction: "internal",
@@ -2656,6 +2696,8 @@ async function processEvent(event, options = {}) {
       summary: "Codex 处理失败",
       content: error.message,
       durationMs: Date.now() - startedAt,
+      retryAttempts: error.activeWriterRetryAttempts,
+      retryElapsedMs: error.activeWriterRetryElapsedMs,
     });
     log("error", "Codex 处理飞书请求失败", {
       eventId: event.event_id,
@@ -2664,6 +2706,8 @@ async function processEvent(event, options = {}) {
       fileToken: event.file_token,
       commentId: event.comment_id,
       error: error.message,
+      retryAttempts: error.activeWriterRetryAttempts,
+      retryElapsedMs: error.activeWriterRetryElapsedMs,
     });
     if (config.replyEnabled) {
       const failureText = "Codex 处理失败，请查看网关日志。";
@@ -2800,7 +2844,7 @@ async function processEvent(event, options = {}) {
 }
 
 async function prepareEventForQueue(event) {
-  if (eventIdSet.has(event.event_id) || queuedEventIds.has(event.event_id)) {
+  const rejectDuplicate = (reason) => {
     observe({
       ...eventObservationFields(event),
       direction: "inbound",
@@ -2808,7 +2852,7 @@ async function prepareEventForQueue(event) {
       status: "ignored",
       summary: "重复事件",
       content: event.content || "",
-      reason: "duplicate_event",
+      reason,
     });
     log("info", "忽略重复事件", {
       eventId: event.event_id,
@@ -2816,10 +2860,16 @@ async function prepareEventForQueue(event) {
       messageId: event.message_id,
       commentId: event.comment_id,
     });
-    return { accepted: false, reserved: false };
+    return { accepted: false, reserved: preReserved };
+  };
+  const preReserved = event.dedup_pre_reserved === true;
+  delete event.dedup_pre_reserved;
+  if (!preReserved) {
+    const initialDuplicateReason = inboundDeduplicator.duplicateReason(event);
+    if (initialDuplicateReason) {
+      return rejectDuplicate(initialDuplicateReason);
+    }
   }
-  queuedEventIds.add(event.event_id);
-
   try {
     await autoAllowMentionedGroup(event);
   } catch (error) {
@@ -2838,7 +2888,7 @@ async function prepareEventForQueue(event) {
       chatId: event.chat_id,
       error: error.message,
     });
-    return { accepted: false, reserved: true };
+    return { accepted: false, reserved: preReserved };
   }
 
   const decision = acceptsEvent(event);
@@ -2861,7 +2911,13 @@ async function prepareEventForQueue(event) {
       commentId: event.comment_id,
       reason: decision.reason,
     });
-    return { accepted: false, reserved: true };
+    return { accepted: false, reserved: preReserved };
+  }
+  if (!preReserved) {
+    const reservation = inboundDeduplicator.reserve(event);
+    if (!reservation.accepted) {
+      return rejectDuplicate(reservation.reason);
+    }
   }
   return { accepted: true, reserved: true };
 }
@@ -2974,7 +3030,7 @@ function enqueueEvent(event) {
         runtimeStatus.queueDepth = Math.max(0, runtimeStatus.queueDepth - 1);
       }
       if (reservedEventId) {
-        queuedEventIds.delete(event.event_id);
+        inboundDeduplicator.release(event);
       }
       inboundTasks.delete(task);
     });
@@ -3026,7 +3082,26 @@ async function retryInboundMessage(input) {
   }
   const event = eventFromPolledMessage(message.chat_id, message);
   event.ingress = "manual_retry";
-  await forgetEvent(event.event_id);
+  const queuedDuplicateReason = inboundDeduplicator.queuedDuplicateReason(event);
+  if (queuedDuplicateReason) {
+    const error = validationError("该飞书消息已经在网关队列中或正在处理");
+    error.code = "message_already_queued";
+    error.statusCode = 409;
+    throw error;
+  }
+  inboundDeduplicator.forget(event);
+  const reservation = inboundDeduplicator.reserve(event);
+  if (!reservation.accepted) {
+    throw new Error(`手动重试未能预留消息去重键: ${reservation.reason}`);
+  }
+  event.dedup_pre_reserved = true;
+  syncInboundDedupState();
+  try {
+    await saveState();
+  } catch (error) {
+    inboundDeduplicator.release(event);
+    throw error;
+  }
   observe({
     ...eventObservationFields(event),
     direction: "internal",
@@ -3386,18 +3461,15 @@ function requestShutdown(signal) {
     reason: signal,
   });
   log("info", "正在停止网关", { signal });
-  if (larkConsumer?.stdin && !larkConsumer.stdin.destroyed) {
-    larkConsumer.stdin.end();
-  }
-  if (larkConsumer) {
-    const child = larkConsumer;
-    child.kill("SIGTERM");
-    const timer = setTimeout(() => {
-      if (larkConsumer === child) {
-        child.kill("SIGKILL");
-      }
-    }, 3000);
-    timer.unref();
+  const child = larkConsumer;
+  if (child) {
+    shutdownConsumerPromise = terminateChildProcess(child).catch((error) => {
+      shutdownConsumerError = error;
+      log("error", "停止飞书订阅子进程失败", {
+        processId: child.pid,
+        error: error.message,
+      });
+    });
   }
 }
 
@@ -3485,6 +3557,12 @@ async function main() {
 
   if (pollingLoop) {
     await pollingLoop;
+  }
+  if (shutdownConsumerPromise) {
+    await shutdownConsumerPromise;
+  }
+  if (shutdownConsumerError) {
+    throw shutdownConsumerError;
   }
   await Promise.allSettled([...inboundTasks]);
   await routeQueue.drain();

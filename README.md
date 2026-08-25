@@ -48,6 +48,7 @@ The gateway delegates Feishu operations to `lark-cli`. Its send and recall tools
 | ✋ Reply approval | Holds selected topic replies for dashboard approval; operators can approve or reject them. |
 | 🤫 Intentional silence | Records `[NO_REPLY]` as a successful Agent decision instead of looking like a dropped message. |
 | 🔍 End-to-end observability | Uses the Feishu `eventId` as the problem ID across receive, queue, Codex, approval, send, and failure stages. |
+| 🛡️ Duplicate and conflict protection | Coalesces the same `messageId` across Bot events and user polling, then retries transient Codex active-writer conflicts with bounded backoff. |
 | ↩️ Managed Bot operations | Applies gateway policy and observability when `lark-cli` sends or recalls Bot messages. |
 
 ## Architecture and message flow
@@ -186,6 +187,8 @@ The loopback dashboard shows:
 - one-click copying of the Feishu `eventId` problem ID.
 
 The MCP server exposes gateway-management tools for status, event search, proactive Bot messages, and Bot-message recall. Sending and recall still run through `lark-cli`; the gateway adds `allowedChatIds` / route enforcement and observable results. Use the existing `lark-cli` Skills directly for general Feishu operations that do not require gateway routing or reply management.
+
+A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. A dashboard manual retry clears the saved record for that `messageId` once and re-enters the normal inbound pipeline.
 
 ### Service commands
 

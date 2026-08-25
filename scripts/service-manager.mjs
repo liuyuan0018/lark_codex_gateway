@@ -9,6 +9,37 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+export function processExists(processId) {
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    return false;
+  }
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") {
+      return false;
+    }
+    if (error.code === "EPERM") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+export async function waitForProcessesToExit(processIds, timeoutMs = 10000) {
+  const targets = [...new Set(processIds.filter((processId) =>
+    Number.isSafeInteger(processId) && processId > 0))];
+  const deadline = Date.now() + timeoutMs;
+  while (targets.some(processExists) && Date.now() < deadline) {
+    await wait(200);
+  }
+  const remaining = targets.filter(processExists);
+  if (remaining.length > 0) {
+    throw new Error(`进程 ${remaining.join(", ")} 未能在 ${timeoutMs}ms 内停止`);
+  }
+}
+
 export function gatewayDashboardUrl(config) {
   const host = ["0.0.0.0", "::", "[::]"].includes(config.dashboardHost)
     ? "127.0.0.1"
@@ -43,6 +74,7 @@ export async function stopGateway(config, health = null) {
     throw new Error(`端口 ${config.dashboardPort} 上的服务不是可识别的飞书 Codex 网关`);
   }
   const processId = Number.parseInt(current.processId, 10);
+  const subscriptionProcessId = Number.parseInt(current.subscriptionProcessId, 10);
   if (!Number.isSafeInteger(processId) || processId <= 0 || processId === process.pid) {
     throw new Error("网关健康信息没有可停止的进程 ID");
   }
@@ -60,10 +92,12 @@ export async function stopGateway(config, health = null) {
     try {
       const next = await getGatewayHealth(config);
       if (next.processId !== processId) {
-        return { stopped: true, processId };
+        await waitForProcessesToExit([processId, subscriptionProcessId]);
+        return { stopped: true, processId, subscriptionProcessId };
       }
     } catch {
-      return { stopped: true, processId };
+      await waitForProcessesToExit([processId, subscriptionProcessId]);
+      return { stopped: true, processId, subscriptionProcessId };
     }
   }
   throw new Error(`网关进程 ${processId} 未能在 10 秒内停止`);

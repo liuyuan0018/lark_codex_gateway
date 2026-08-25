@@ -143,7 +143,11 @@ async function runCodexAppServer(options) {
       }
       pendingRequests.delete(message.id);
       if (message.error) {
-        pending.reject(new Error(`${pending.method} 失败: ${JSON.stringify(message.error)}`));
+        const error = new Error(`${pending.method} 失败: ${JSON.stringify(message.error)}`);
+        error.rpcCode = message.error.code;
+        error.rpcMessage = message.error.message;
+        error.rpcMethod = pending.method;
+        pending.reject(error);
       } else {
         pending.resolve(message.result);
       }

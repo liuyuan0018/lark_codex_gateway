@@ -3391,11 +3391,12 @@ function requestShutdown(signal) {
   }
   if (larkConsumer) {
     const child = larkConsumer;
+    child.kill("SIGTERM");
     const timer = setTimeout(() => {
       if (larkConsumer === child) {
-        child.kill("SIGTERM");
+        child.kill("SIGKILL");
       }
-    }, 10000);
+    }, 3000);
     timer.unref();
   }
 }

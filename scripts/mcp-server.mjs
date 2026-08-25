@@ -3,7 +3,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { loadGatewayConfig } from "./config.mjs";
+import { loadGatewayConfig, resolveGatewayConfigPath } from "./config.mjs";
 import {
   ensureGateway as ensureGatewayService,
   gatewayDashboardUrl,
@@ -13,8 +13,7 @@ const pluginRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const manifest = JSON.parse(
   await readFile(path.join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 );
-const { config, configPath, fingerprint: configFingerprint } = await loadGatewayConfig(pluginRoot);
-const dashboardUrl = gatewayDashboardUrl(config);
+const configPath = resolveGatewayConfigPath(pluginRoot);
 const JsonRpcError = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -22,6 +21,7 @@ const JsonRpcError = {
 };
 
 let lastStartError = "";
+let dashboardUrl = "";
 let ensurePromise = null;
 
 function send(message) {
@@ -54,12 +54,18 @@ async function fetchJson(url, timeoutMs = 2500, options = {}) {
 
 function ensureGateway() {
   if (!ensurePromise) {
-    ensurePromise = ensureGatewayService({
-      pluginRoot,
+    ensurePromise = loadGatewayConfig(pluginRoot, configPath).then(({
       config,
-      configPath,
-      configFingerprint,
-      expectedVersion: manifest.version,
+      fingerprint: configFingerprint,
+    }) => {
+      dashboardUrl = gatewayDashboardUrl(config);
+      return ensureGatewayService({
+        pluginRoot,
+        config,
+        configPath,
+        configFingerprint,
+        expectedVersion: manifest.version,
+      });
     }).then((health) => {
       lastStartError = "";
       return health;
@@ -96,7 +102,7 @@ async function gatewayStatus() {
 }
 
 async function gatewayEvents(args) {
-  await ensureGateway();
+  const health = await ensureGateway();
   const limit = Math.min(Math.max(Number.parseInt(args.limit ?? "100", 10) || 100, 1), 500);
   const params = new URLSearchParams({ limit: String(limit) });
   for (const key of ["direction", "kind", "status", "query"]) {
@@ -104,13 +110,13 @@ async function gatewayEvents(args) {
       params.set(key, args[key].trim());
     }
   }
-  const result = await fetchJson(`${dashboardUrl}/api/events?${params}`);
+  const result = await fetchJson(`${health.dashboardUrl}/api/events?${params}`);
   return toolResult(`读取到 ${result.events?.length ?? 0} 条网关记录。`, result);
 }
 
 async function gatewaySendMessage(args) {
-  await ensureGateway();
-  const result = await fetchJson(`${dashboardUrl}/api/messages`, 90000, {
+  const health = await ensureGateway();
+  const result = await fetchJson(`${health.dashboardUrl}/api/messages`, 90000, {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify({
@@ -129,8 +135,8 @@ async function gatewaySendMessage(args) {
 }
 
 async function gatewayRecallMessage(args) {
-  await ensureGateway();
-  const result = await fetchJson(`${dashboardUrl}/api/messages/recall`, 90000, {
+  const health = await ensureGateway();
+  const result = await fetchJson(`${health.dashboardUrl}/api/messages/recall`, 90000, {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify({ messageId: args.message_id }),

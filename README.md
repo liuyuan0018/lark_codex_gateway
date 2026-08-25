@@ -125,6 +125,8 @@ You may also set `LARK_CODEX_GATEWAY_CONFIG` to an explicit path. On macOS, rest
 chmod 600 "$HOME/Library/Application Support/lark-codex-gateway/config.json"
 ```
 
+The bundled MCP configuration uses the stable cross-platform reference `user://lark-codex-gateway/config.json`, which resolves to the platform-specific private path above. The Plugin process keeps only that selected path stable; it does not cache the file contents. Each gateway tool call reloads the path. When the content fingerprint changes, the Plugin gracefully restarts the gateway with the new configuration. Restart the Codex Plugin only when changing `LARK_CODEX_GATEWAY_CONFIG` or switching to a different configuration path.
+
 ### 4. Start through Codex
 
 Open a new Codex task and ask `Show the current Feishu gateway status`. The installed Plugin starts the local gateway when its MCP tool is first used.

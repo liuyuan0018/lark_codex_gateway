@@ -3,7 +3,10 @@
     "lark-codex-gateway": {
       "command": "node",
       "args": ["./scripts/mcp-server.mjs"],
-      "cwd": "."
+      "cwd": ".",
+      "env": {
+        "LARK_CODEX_GATEWAY_CONFIG": "user://lark-codex-gateway/config.json"
+      }
     }
   }
 }

@@ -9,6 +9,7 @@ const CHAT_ID_PATTERN = /^oc_[A-Za-z0-9]+$/;
 const OPEN_ID_PATTERN = /^ou_[A-Za-z0-9]+$/;
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CODEX_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const USER_CONFIG_REFERENCE = "user://lark-codex-gateway/config.json";
 const CODEX_REASONING_EFFORTS = new Set([
   "none",
   "minimal",
@@ -38,6 +39,14 @@ function userConfigDirectory() {
     return path.join(os.homedir(), "Library", "Application Support", "lark-codex-gateway");
   }
   return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "lark-codex-gateway");
+}
+
+function resolveConfigReference(value) {
+  const reference = value.trim();
+  if (reference === USER_CONFIG_REFERENCE) {
+    return path.join(userConfigDirectory(), "config.json");
+  }
+  return path.resolve(expandHome(reference));
 }
 
 export function defaultStateDirectory() {
@@ -233,10 +242,10 @@ export async function addAllowedChatId(configPath, chatId) {
   return { added: true, config: updated, fingerprint: fingerprintConfig(updated) };
 }
 
-export async function loadGatewayConfig(pluginRoot) {
+export function resolveGatewayConfigPath(pluginRoot) {
   const candidates = [];
   if (process.env.LARK_CODEX_GATEWAY_CONFIG) {
-    candidates.push(path.resolve(expandHome(process.env.LARK_CODEX_GATEWAY_CONFIG)));
+    candidates.push(resolveConfigReference(process.env.LARK_CODEX_GATEWAY_CONFIG));
   }
   candidates.push(path.join(pluginRoot, "config.local.json"));
   candidates.push(path.join(userConfigDirectory(), "config.json"));
@@ -248,6 +257,13 @@ export async function loadGatewayConfig(pluginRoot) {
       "或设置 LARK_CODEX_GATEWAY_CONFIG。",
     );
   }
+  return configPath;
+}
+
+export async function loadGatewayConfig(pluginRoot, resolvedConfigPath = "") {
+  const configPath = resolvedConfigPath
+    ? resolveConfigReference(resolvedConfigPath)
+    : resolveGatewayConfigPath(pluginRoot);
   let raw;
   try {
     raw = JSON.parse(await readFile(configPath, "utf8"));

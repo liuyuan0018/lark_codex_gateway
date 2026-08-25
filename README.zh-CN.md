@@ -125,6 +125,8 @@ lark-cli auth login --domain all
 chmod 600 "$HOME/Library/Application Support/lark-codex-gateway/config.json"
 ```
 
+插件随附的 MCP 配置使用稳定的跨平台引用 `user://lark-codex-gateway/config.json`，运行时映射到上表对应平台的私有路径。插件进程只固定这个选中的路径，不缓存文件内容。每次调用网关工具时都会重新读取该路径；内容指纹变化后，插件会优雅重启网关并加载新配置。只有修改 `LARK_CODEX_GATEWAY_CONFIG` 或切换配置文件路径时，才需要重启 Codex 插件。
+
 ### 4. 通过 Codex 启动
 
 新建一个 Codex 任务并输入“查看当前飞书网关状态”。第一次调用 Plugin 的 MCP 工具时，Plugin 会启动本地网关。

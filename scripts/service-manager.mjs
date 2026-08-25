@@ -27,16 +27,47 @@ export function processExists(processId) {
   }
 }
 
-export async function waitForProcessesToExit(processIds, timeoutMs = 10000) {
+export function processGroupExists(processGroupId) {
+  if (process.platform === "win32" || !Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    return false;
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") {
+      return false;
+    }
+    if (error.code === "EPERM") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+export async function waitForProcessesToExit(
+  processIds,
+  timeoutMs = 10000,
+  processGroupIds = [],
+) {
   const targets = [...new Set(processIds.filter((processId) =>
     Number.isSafeInteger(processId) && processId > 0))];
+  const groupTargets = [...new Set(processGroupIds.filter((processGroupId) =>
+    Number.isSafeInteger(processGroupId) && processGroupId > 0))];
   const deadline = Date.now() + timeoutMs;
-  while (targets.some(processExists) && Date.now() < deadline) {
+  while (
+    (targets.some(processExists) || groupTargets.some(processGroupExists)) &&
+    Date.now() < deadline
+  ) {
     await wait(200);
   }
   const remaining = targets.filter(processExists);
-  if (remaining.length > 0) {
-    throw new Error(`进程 ${remaining.join(", ")} 未能在 ${timeoutMs}ms 内停止`);
+  const remainingGroups = groupTargets.filter(processGroupExists);
+  if (remaining.length > 0 || remainingGroups.length > 0) {
+    throw new Error(
+      `进程 ${remaining.join(", ") || "(none)"} / 进程组 ` +
+      `${remainingGroups.join(", ") || "(none)"} 未能在 ${timeoutMs}ms 内停止`,
+    );
   }
 }
 
@@ -75,6 +106,7 @@ export async function stopGateway(config, health = null) {
   }
   const processId = Number.parseInt(current.processId, 10);
   const subscriptionProcessId = Number.parseInt(current.subscriptionProcessId, 10);
+  const subscriptionProcessGroupId = Number.parseInt(current.subscriptionProcessGroupId, 10);
   if (!Number.isSafeInteger(processId) || processId <= 0 || processId === process.pid) {
     throw new Error("网关健康信息没有可停止的进程 ID");
   }
@@ -92,12 +124,20 @@ export async function stopGateway(config, health = null) {
     try {
       const next = await getGatewayHealth(config);
       if (next.processId !== processId) {
-        await waitForProcessesToExit([processId, subscriptionProcessId]);
-        return { stopped: true, processId, subscriptionProcessId };
+        await waitForProcessesToExit(
+          [processId, subscriptionProcessId],
+          10000,
+          [subscriptionProcessGroupId],
+        );
+        return { stopped: true, processId, subscriptionProcessId, subscriptionProcessGroupId };
       }
     } catch {
-      await waitForProcessesToExit([processId, subscriptionProcessId]);
-      return { stopped: true, processId, subscriptionProcessId };
+      await waitForProcessesToExit(
+        [processId, subscriptionProcessId],
+        10000,
+        [subscriptionProcessGroupId],
+      );
+      return { stopped: true, processId, subscriptionProcessId, subscriptionProcessGroupId };
     }
   }
   throw new Error(`网关进程 ${processId} 未能在 10 秒内停止`);

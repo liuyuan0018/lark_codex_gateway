@@ -272,6 +272,7 @@ let stateWriteTail = Promise.resolve();
 let configWriteTail = Promise.resolve();
 let stateWriteSequence = 0;
 let larkConsumer = null;
+let larkConsumerProcessGroupId = null;
 let shuttingDown = false;
 let shutdownConsumerPromise = null;
 let shutdownConsumerError = null;
@@ -351,6 +352,7 @@ function getRuntimeStatus() {
     uptimeMs: Date.now() - new Date(runtimeStatus.startedAt).getTime(),
     processId: process.pid,
     subscriptionProcessId: larkConsumer?.pid || null,
+    subscriptionProcessGroupId: larkConsumerProcessGroupId,
     gatewayVersion: pluginManifest.version,
     connectionState: runtimeStatus.connectionState,
     queueDepth: runtimeStatus.queueDepth + runtimeStatus.outboundQueueDepth,
@@ -3324,12 +3326,14 @@ function consumeLarkEventsOnce() {
       {
         cwd: config.codexWorkdir,
         env: process.env,
+        detached: process.platform !== "win32",
         shell: false,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
     larkConsumer = child;
+    larkConsumerProcessGroupId = process.platform !== "win32" ? child.pid : null;
     let ready = false;
     let receivedEventLines = 0;
     const bufferedLines = [];
@@ -3369,9 +3373,8 @@ function consumeLarkEventsOnce() {
         acceptEventLine(bufferedLine);
       }
       if (config.exitAfterReady) {
-        shuttingDown = true;
         log("info", "健康检查已确认订阅就绪，正在停止订阅进程");
-        child.kill("SIGTERM");
+        requestShutdown("ready_check");
       }
     };
 
@@ -3404,8 +3407,13 @@ function consumeLarkEventsOnce() {
 
     const readyTimer = setTimeout(() => {
       if (!ready && !shuttingDown) {
-        child.stdin.end();
-        child.kill("SIGTERM");
+        const processGroupId = larkConsumerProcessGroupId;
+        terminateChildProcess(child, { processGroupId }).catch((error) => {
+          log("error", "停止未就绪的飞书订阅进程失败", {
+            processId: child.pid,
+            error: error.message,
+          });
+        });
       }
     }, config.readyTimeoutMs);
 
@@ -3414,12 +3422,14 @@ function consumeLarkEventsOnce() {
       runtimeStatus.connectionState = "error";
       if (larkConsumer === child) {
         larkConsumer = null;
+        larkConsumerProcessGroupId = null;
       }
       reject(error);
     });
 
     child.once("exit", (code, signal) => {
       clearTimeout(readyTimer);
+      const processGroupId = larkConsumerProcessGroupId;
       runtimeStatus.connectionState = shuttingDown ? "stopping" : "disconnected";
       observe({
         direction: "internal",
@@ -3431,13 +3441,18 @@ function consumeLarkEventsOnce() {
       });
       if (larkConsumer === child) {
         larkConsumer = null;
+        larkConsumerProcessGroupId = null;
       }
       if (shuttingDown) {
         resolve();
         return;
       }
       const readiness = ready ? "订阅运行后退出" : "订阅未就绪";
-      reject(new Error(`${readiness}，退出码 ${code ?? "null"}，信号 ${signal ?? "none"}`));
+      terminateChildProcess(child, { processGroupId })
+        .then(() => reject(
+          new Error(`${readiness}，退出码 ${code ?? "null"}，信号 ${signal ?? "none"}`),
+        ))
+        .catch(reject);
     });
   });
 }
@@ -3463,7 +3478,8 @@ function requestShutdown(signal) {
   log("info", "正在停止网关", { signal });
   const child = larkConsumer;
   if (child) {
-    shutdownConsumerPromise = terminateChildProcess(child).catch((error) => {
+    const processGroupId = larkConsumerProcessGroupId;
+    shutdownConsumerPromise = terminateChildProcess(child, { processGroupId }).catch((error) => {
       shutdownConsumerError = error;
       log("error", "停止飞书订阅子进程失败", {
         processId: child.pid,

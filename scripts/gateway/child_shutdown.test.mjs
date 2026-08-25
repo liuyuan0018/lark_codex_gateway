@@ -47,3 +47,24 @@ test("shutdown escalates to KILL and still waits for child exit", async () => {
   assert.deepEqual(result, { exited: true, forced: true });
   assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
 });
+
+test("shutdown waits for the whole subscription process group", async () => {
+  const child = new FakeChild();
+  let groupAlive = true;
+  const result = await terminateChildProcess(child, {
+    graceMs: 1,
+    killWaitMs: 5,
+    processGroupId: child.pid,
+    groupExists: () => groupAlive,
+    sendSignal: (target, signal) => {
+      target.kill(signal);
+      if (signal === "SIGKILL") {
+        groupAlive = false;
+      }
+    },
+  });
+
+  assert.deepEqual(result, { exited: true, forced: true });
+  assert.equal(groupAlive, false);
+  assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+});

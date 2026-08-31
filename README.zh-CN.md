@@ -74,7 +74,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | `allowedChatIds` 普通群 | Bot 事件 | 需要 | 自动创建并复用 | 直接发送 |
 | `chatRoutes` 固定路由 | Bot 事件 | 需要 | 配置中已有的任务 | 直接发送 |
-| `topicChatRoutes` 话题群 | 已授权用户轮询 | 不需要 | 每个 `chat_id + thread_id` 一个任务 | 默认网页授权，可按群关闭 |
+| `topicChatRoutes` 话题群或显式允许的普通群 | 已授权用户身份轮询用户及其他应用消息 | 不需要 | 每个话题、根消息或消息线程一个任务 | 默认网页授权，可按群关闭 |
 | 文档评论 | 飞书事件 | 取决于事件 | 顶层 `threadId` | 直接发送 |
 
 陌生普通群只有在 Bot 事件明确 `@Bot` 时才会进入网关。网关会把该 `chat_id` 写入当前私有配置，但不会把陌生群加入用户身份轮询。
@@ -155,8 +155,8 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
 | `allowedChatIds` | 可以通过明确 Bot 事件进入网关的普通群。 |
 | `commandSenderIds` | 这些用户明确 `@Bot` 时，Codex 必须处理并回复。 |
 | `chatRoutes` | 把普通群固定绑定到当前机器已有的 Codex 任务 UUID。 |
-| `topicChatRoutes` | 配置话题群、项目 Skill、初始化提示词和回复授权策略。 |
-| `pollUserMessages` | 只为 `topicChatRoutes` 启用用户身份轮询。 |
+| `topicChatRoutes` | 配置线程化轮询、普通群显式开关、项目 Skill、初始化提示词和回复授权策略。 |
+| `pollUserMessages` | 只为 `topicChatRoutes` 启用用户身份轮询；接收用户和其他应用消息，并排除网关 Bot 自己的消息。 |
 | `pollIntervalMs` | 话题群轮询间隔，默认 `5000` 毫秒。 |
 | `groupContextMessages` | 当前消息明确要求读取历史时，最多附带多少条更早的消息。 |
 | `enableDocComments` | 是否处理文档评论，默认关闭。 |
@@ -168,6 +168,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
   "chatId": "oc_replace_with_topic_chat_id",
   "threadTitlePrefix": "值班话题",
   "replyApprovalRequired": true,
+  "allowRegularChat": false,
   "skillName": "incident-triage",
   "initializationPrompt": "你是本群的值班助手。每个话题只处理对应的问题。"
 }
@@ -188,7 +189,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
 
 MCP 服务提供网关状态、事件搜索、Bot 主动发消息和撤回 Bot 消息等管理工具。发送和撤回仍由 `lark-cli` 执行；网关负责检查 `allowedChatIds` 和路由，并记录操作结果。不需要网关分流或回复管理的通用飞书操作，应直接使用已有的 `lark-cli` Skill。
 
-同一飞书聊天消息即使同时从 Bot 事件和用户轮询到达，也只会处理一次；`eventId` 仍分别保留用于链路追踪。Codex 任务暂时存在活动写入者时，网关会在同一 session 队列内有界重试，耗尽前不会发送失败说明。网页手动重试会受控地清除该 `messageId` 的已处理记录后重新进入正常管线。
+同一飞书聊天消息即使同时从 Bot 事件和用户轮询到达，也只会处理一次；`eventId` 仍分别保留用于链路追踪。Codex 任务暂时存在活动写入者时，网关会在同一 session 队列内有界重试，耗尽前不会发送失败说明。IM 回复或主动消息遇到明确的 HTTP 429 限流时，网关会复用原幂等键执行有界退避重试，不会重新运行 Codex。网页手动重试会受控地清除该 `messageId` 的已处理记录后重新进入正常管线。
 
 ### 服务命令
 

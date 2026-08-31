@@ -1,6 +1,6 @@
 {
   "name": "lark-codex-gateway",
-  "version": "0.1.0+codex.20260825183000",
+  "version": "0.1.0+codex.20260831164358",
   "description": "Send, recall, run, and observe messages through a local Feishu-to-Codex gateway.",
   "author": {
     "name": "Open source contributors"

@@ -12,7 +12,13 @@ import { terminateChildProcess } from "./child_shutdown.mjs";
 import { messageRequestsGroupHistory } from "./context_policy.mjs";
 import { createInboundDeduplicator } from "./inbound_dedup.mjs";
 import { createKeyedQueue } from "./keyed_queue.mjs";
+import { runWithLarkRateLimitRetry } from "./lark_rate_limit_retry.mjs";
 import { createObservability } from "./observability.mjs";
+import {
+  isPollableMessage,
+  polledMessageSenderId,
+  pollingRouteAcceptsChatMode,
+} from "./poll_message_policy.mjs";
 import {
   buildReplyDecisionInstructions,
   noReplyObservationFields,
@@ -133,6 +139,9 @@ function readTopicChatRoutes(name) {
     ) {
       throw new Error(`${name}[${index}].replyApprovalRequired 必须是布尔值`);
     }
+    if (item.allowRegularChat !== undefined && typeof item.allowRegularChat !== "boolean") {
+      throw new Error(`${name}[${index}].allowRegularChat 必须是布尔值`);
+    }
     if (routes.has(chatId)) {
       throw new Error(`${name} 包含重复的 chatId: ${chatId}`);
     }
@@ -142,6 +151,7 @@ function readTopicChatRoutes(name) {
       skillName,
       threadTitlePrefix,
       replyApprovalRequired,
+      allowRegularChat: item.allowRegularChat === true,
     });
   }
   return routes;
@@ -278,7 +288,7 @@ let shutdownConsumerPromise = null;
 let shutdownConsumerError = null;
 let observability = null;
 let pollingLoop = null;
-const verifiedTopicChatIds = new Set();
+const verifiedPollingChatModes = new Map();
 const approvalsInFlight = new Set();
 const runtimeStatus = {
   startedAt: new Date().toISOString(),
@@ -387,7 +397,9 @@ function getRuntimeStatus() {
       initializationPromptConfigured: Boolean(route.initializationPrompt),
       initializationPromptChars: route.initializationPrompt.length,
       skillName: route.skillName,
-      verified: verifiedTopicChatIds.has(route.chatId),
+      allowRegularChat: route.allowRegularChat,
+      verified: verifiedPollingChatModes.has(route.chatId),
+      verifiedChatMode: verifiedPollingChatModes.get(route.chatId) || "",
     })),
     topicThreadCount: Object.values(state.topicThreads).reduce(
       (count, assignments) => count + Object.keys(assignments).length,
@@ -1023,8 +1035,8 @@ async function loadChatTitle(event) {
 }
 
 async function ensureTopicChatRoute(event, route) {
-  if (verifiedTopicChatIds.has(route.chatId)) {
-    return;
+  if (verifiedPollingChatModes.has(route.chatId)) {
+    return verifiedPollingChatModes.get(route.chatId);
   }
   if (event.chat_type !== "group") {
     throw new Error(`配置的话题群 ${route.chatId} 收到了非群聊事件`);
@@ -1039,17 +1051,25 @@ async function ensureTopicChatRoute(event, route) {
     "user",
     "--json",
   ]);
-  if (result?.data?.chat_mode !== "topic") {
-    throw new Error(`配置的飞书会话 ${route.chatId} 不是话题群`);
+  const chatMode = result?.data?.chat_mode;
+  if (!pollingRouteAcceptsChatMode(chatMode, route.allowRegularChat)) {
+    throw new Error(
+      route.allowRegularChat
+        ? `配置的飞书会话 ${route.chatId} 不是话题群或普通群`
+        : `配置的飞书会话 ${route.chatId} 不是话题群`,
+    );
   }
-  verifiedTopicChatIds.add(route.chatId);
+  verifiedPollingChatModes.set(route.chatId, chatMode);
   observe({
     ...eventObservationFields(event),
     direction: "internal",
-    stage: "topic_route_verified",
+    stage: "polling_route_verified",
     status: "info",
-    summary: "已确认配置的飞书会话是话题群",
+    summary: chatMode === "topic"
+      ? "已确认配置的飞书会话是话题群"
+      : "已确认配置的飞书会话是允许轮询的普通群",
   });
+  return chatMode;
 }
 
 async function loadCurrentMessage(event) {
@@ -1166,7 +1186,10 @@ async function resolveThreadForEvent(event) {
   const topicRoute = config.topicChatRoutes.get(event.chat_id);
   if (topicRoute) {
     event.codex_route_type = "topic_thread_assignment";
-    await ensureTopicChatRoute(event, topicRoute);
+    const chatMode = await ensureTopicChatRoute(event, topicRoute);
+    event.codex_route_type = chatMode === "topic"
+      ? "topic_thread_assignment"
+      : "message_thread_assignment";
     const currentMessage = await loadCurrentMessage(event);
     const larkThreadId = currentMessage.thread_id || currentMessage.message_id;
     if (typeof larkThreadId !== "string" || !LARK_THREAD_ID_PATTERN.test(larkThreadId)) {
@@ -1376,7 +1399,28 @@ async function loadInitialTopicContext(event, currentMessage) {
   const seenPageTokens = new Set();
   let pageToken = "";
   try {
+    if (event.codex_route_type === "message_thread_assignment" && !currentMessage.thread_id) {
+      const result = await runLarkJson([
+        "im",
+        "+messages-mget",
+        "--as",
+        "user",
+        "--message-ids",
+        currentMessage.message_id,
+        "--no-reactions",
+        "--download-resources",
+        "--format",
+        "json",
+      ], 120000, { cwd: temporaryDirectory });
+      const downloadedCurrent = result?.data?.messages?.find(
+        (message) => message.message_id === currentMessage.message_id,
+      );
+      messages.push(downloadedCurrent || currentMessage);
+    }
     while (true) {
+      if (messages.length > 0 && event.codex_route_type === "message_thread_assignment") {
+        break;
+      }
       const result = await runLarkJson([
         "im",
         "+threads-messages-list",
@@ -1654,7 +1698,9 @@ function buildMessagePrompt(event, context) {
   const sections = [];
   const isAuthorizedBotCommand = config.commandSenderIds.has(event.sender_id) && eventMentionsCurrentBot(event);
   const replyDecisionInstructions = buildReplyDecisionInstructions({
-    topicMessage: event.codex_route_type === "topic_thread_assignment",
+    topicMessage: ["topic_thread_assignment", "message_thread_assignment"].includes(
+      event.codex_route_type,
+    ),
     forceReply: isAuthorizedBotCommand,
   });
   if (event.codex_topic_setup) {
@@ -1956,7 +2002,7 @@ async function replyToMessage(event, text) {
       .update(`${event.event_id}:${index}`)
       .digest("hex")
       .slice(0, 32);
-    const result = await runCommand(
+    const retryResult = await runWithLarkRateLimitRetry(() => runCommand(
       larkCli.command,
       [
         ...larkCli.prefixArgs,
@@ -1972,9 +2018,34 @@ async function replyToMessage(event, text) {
         idempotencyKey,
       ],
       { cwd: config.codexWorkdir, timeoutMs: 60000 },
-    );
+    ), {
+      onRetry: ({ attempt, nextAttempt, delayMs, elapsedMs }) => {
+        observe({
+          ...eventObservationFields(event),
+          direction: "outbound",
+          stage: "delivery_retry",
+          status: "processing",
+          summary: "飞书回复触发限流，等待重试",
+          chunkIndex: index,
+          retryAttempt: attempt,
+          nextRetryAttempt: nextAttempt,
+          retryDelayMs: delayMs,
+          retryElapsedMs: elapsedMs,
+          idempotencyKey,
+        });
+      },
+    });
+    const result = retryResult.value;
+    const retryAttempts = retryResult.attempts - 1;
+    if (retryAttempts > 0) {
+      event.lark_delivery_retry_attempts = (event.lark_delivery_retry_attempts || 0) + retryAttempts;
+      event.lark_delivery_retry_elapsed_ms = (event.lark_delivery_retry_elapsed_ms || 0) + retryResult.elapsedMs;
+    }
     if (result.code !== 0) {
-      throw new Error(`飞书回复失败，退出码 ${result.code}${result.stderr ? `: ${result.stderr.trim()}` : ""}`);
+      const retrySummary = retryResult.attempts > 1
+        ? `，限流重试 ${retryResult.attempts - 1} 次后仍失败`
+        : "";
+      throw new Error(`飞书回复失败，退出码 ${result.code}${retrySummary}${result.stderr ? `: ${result.stderr.trim()}` : ""}`);
     }
     try {
       const parsed = JSON.parse(result.stdout);
@@ -2158,6 +2229,8 @@ async function sendProactiveMessage(input) {
 
   const task = outboundTail.then(async () => {
     const startedAt = Date.now();
+    let deliveryRetryAttempts;
+    let deliveryRetryElapsedMs;
     let queueReleased = false;
     const releaseQueue = () => {
       if (!queueReleased) {
@@ -2177,7 +2250,7 @@ async function sendProactiveMessage(input) {
       idempotencyKey: message.idempotencyKey,
     });
     try {
-      const result = await runCommand(
+      const retryResult = await runWithLarkRateLimitRetry(() => runCommand(
         larkCli.command,
         [
           ...larkCli.prefixArgs,
@@ -2194,9 +2267,35 @@ async function sendProactiveMessage(input) {
           "--json",
         ],
         { cwd: config.codexWorkdir, timeoutMs: 60000, maxCapturedChars: 100000 },
-      );
+      ), {
+        onRetry: ({ attempt, nextAttempt, delayMs, elapsedMs }) => {
+          observe({
+            direction: "outbound",
+            kind: "message",
+            stage: "delivery_retry",
+            status: "processing",
+            summary: "飞书主动消息触发限流，等待重试",
+            content: message.content,
+            chatId: message.chatId,
+            eventId: requestId,
+            idempotencyKey: message.idempotencyKey,
+            retryAttempt: attempt,
+            nextRetryAttempt: nextAttempt,
+            retryDelayMs: delayMs,
+            retryElapsedMs: elapsedMs,
+          });
+        },
+      });
+      const result = retryResult.value;
+      if (retryResult.attempts > 1) {
+        deliveryRetryAttempts = retryResult.attempts - 1;
+        deliveryRetryElapsedMs = retryResult.elapsedMs;
+      }
       if (result.code !== 0) {
-        throw new Error(`飞书主动发送失败，退出码 ${result.code}${result.stderr ? `: ${result.stderr.trim()}` : ""}`);
+        const retrySummary = retryResult.attempts > 1
+          ? `，限流重试 ${retryResult.attempts - 1} 次后仍失败`
+          : "";
+        throw new Error(`飞书主动发送失败，退出码 ${result.code}${retrySummary}${result.stderr ? `: ${result.stderr.trim()}` : ""}`);
       }
       let parsed;
       try {
@@ -2221,6 +2320,8 @@ async function sendProactiveMessage(input) {
         messageId,
         destinationIds: [messageId],
         idempotencyKey: message.idempotencyKey,
+        deliveryRetryAttempts,
+        deliveryRetryElapsedMs,
         durationMs: Date.now() - startedAt,
       });
       return {
@@ -2242,6 +2343,8 @@ async function sendProactiveMessage(input) {
         eventId: requestId,
         idempotencyKey: message.idempotencyKey,
         reason: error.message,
+        deliveryRetryAttempts,
+        deliveryRetryElapsedMs,
         durationMs: Date.now() - startedAt,
       });
       throw error;
@@ -2802,6 +2905,8 @@ async function processEvent(event, options = {}) {
         content: response,
         destinationIds: replyIds,
         durationMs: Date.now() - startedAt,
+        deliveryRetryAttempts: event.lark_delivery_retry_attempts,
+        deliveryRetryElapsedMs: event.lark_delivery_retry_elapsed_ms,
       });
     } catch (error) {
       observe({
@@ -2813,6 +2918,8 @@ async function processEvent(event, options = {}) {
         content: response,
         reason: error.message,
         durationMs: Date.now() - startedAt,
+        deliveryRetryAttempts: event.lark_delivery_retry_attempts,
+        deliveryRetryElapsedMs: event.lark_delivery_retry_elapsed_ms,
       });
       log("error", "Codex 已处理请求，但飞书回复失败", {
         eventId: event.event_id,
@@ -3140,7 +3247,7 @@ async function initializePollCursors() {
 
 function eventFromPolledMessage(chatId, message) {
   const messageId = typeof message?.message_id === "string" ? message.message_id : "";
-  const senderId = openIdFrom(message?.sender?.id || message?.sender);
+  const senderId = polledMessageSenderId(message);
   return {
     type: MESSAGE_EVENT_TYPE,
     event_id: messageId ? `${MESSAGE_EVENT_TYPE}:${messageId}` : "",
@@ -3199,12 +3306,7 @@ async function listPolledMessages(chatId, start, end) {
     pageToken = nextPageToken;
   }
 
-  const readableRawMessages = rawMessages.filter((message) =>
-    !message?.deleted &&
-    message?.sender?.sender_type === "user" &&
-    typeof message?.message_id === "string" &&
-    message.message_id.startsWith("om_"),
-  );
+  const readableRawMessages = rawMessages.filter((message) => isPollableMessage(message));
   const messagesById = new Map();
   for (let offset = 0; offset < readableRawMessages.length; offset += 50) {
     const messageIds = readableRawMessages
@@ -3233,7 +3335,9 @@ async function listPolledMessages(chatId, start, end) {
   if (missingMessageIds.length > 0) {
     throw new Error(`批量读取飞书轮询消息正文失败：${missingMessageIds.join(",")}`);
   }
-  return readableRawMessages.map((message) => messagesById.get(message.message_id));
+  return readableRawMessages
+    .map((message) => messagesById.get(message.message_id))
+    .filter((message) => isPollableMessage(message, { botOpenId: config.botOpenId }));
 }
 
 async function pollChatMessages(chatId) {
@@ -3245,9 +3349,6 @@ async function pollChatMessages(chatId) {
   const messages = await listPolledMessages(chatId, start, end);
   const processing = [];
   for (const message of messages) {
-    if (message?.deleted || message?.sender?.sender_type !== "user") {
-      continue;
-    }
     processing.push(enqueueEvent(eventFromPolledMessage(chatId, message)));
   }
   if (processing.length > 0) {

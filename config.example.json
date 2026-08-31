@@ -26,6 +26,7 @@
       "chatId": "oc_replace_with_topic_chat_id",
       "threadTitlePrefix": "Feishu topic",
       "replyApprovalRequired": true,
+      "allowRegularChat": false,
       "skillName": "replace-with-project-skill-name",
       "initializationPrompt": "Describe only the assistant identity and the scope of one topic."
     }

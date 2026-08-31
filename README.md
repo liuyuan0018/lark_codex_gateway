@@ -74,7 +74,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | Ordinary chat in `allowedChatIds` | Bot event | Yes, for group messages | Created automatically and reused | Sent immediately |
 | Fixed route in `chatRoutes` | Bot event | Yes, for group messages | Existing task from configuration | Sent immediately |
-| Topic chat in `topicChatRoutes` | Authorized user polling | No | One task per `chat_id + thread_id` | Approval by default; configurable per route |
+| Topic chat, or opted-in regular chat, in `topicChatRoutes` | Authorized-user polling of user and external-app messages | No | One task per topic, root message, or message thread | Approval by default; configurable per route |
 | Document comment | Feishu event | Event-dependent | Top-level `threadId` | Sent immediately |
 
 An unknown ordinary group is accepted only when its Bot event explicitly mentions the current Bot. The gateway then adds that `chat_id` to the active private configuration. Unknown groups are never added to user-identity polling.
@@ -155,8 +155,8 @@ Start with [`config.example.json`](config.example.json). The most important fiel
 | `allowedChatIds` | Ordinary chats that may enter through explicit Bot events. |
 | `commandSenderIds` | Users whose explicit `@Bot` requests must receive a Codex response. |
 | `chatRoutes` | Fixed ordinary-chat bindings to existing Codex task UUIDs. |
-| `topicChatRoutes` | Topic-chat configuration, including optional project Skill, initialization prompt, and reply approval policy. |
-| `pollUserMessages` | Enables user-identity polling for `topicChatRoutes` only. |
+| `topicChatRoutes` | Threaded polling configuration, including optional regular-chat opt-in, project Skill, initialization prompt, and reply approval policy. |
+| `pollUserMessages` | Enables user-identity polling for `topicChatRoutes` only. It accepts user and external-app messages while excluding this gateway Bot's own messages. |
 | `pollIntervalMs` | Delay between topic-chat polls; defaults to `5000`. |
 | `groupContextMessages` | Maximum earlier messages attached when the current message explicitly requests history. |
 | `enableDocComments` | Enables document-comment handling; disabled by default. |
@@ -168,6 +168,7 @@ Start with [`config.example.json`](config.example.json). The most important fiel
   "chatId": "oc_replace_with_topic_chat_id",
   "threadTitlePrefix": "Support topic",
   "replyApprovalRequired": true,
+  "allowRegularChat": false,
   "skillName": "incident-triage",
   "initializationPrompt": "Act as the support assistant for this chat. Handle one topic per Codex task."
 }
@@ -188,7 +189,7 @@ The loopback dashboard shows:
 
 The MCP server exposes gateway-management tools for status, event search, proactive Bot messages, and Bot-message recall. Sending and recall still run through `lark-cli`; the gateway adds `allowedChatIds` / route enforcement and observable results. Use the existing `lark-cli` Skills directly for general Feishu operations that do not require gateway routing or reply management.
 
-A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. A dashboard manual retry clears the saved record for that `messageId` once and re-enters the normal inbound pipeline.
+A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. IM replies and proactive messages that receive an explicit HTTP 429 response reuse the original idempotency key for bounded backoff retries without running Codex again. A dashboard manual retry clears the saved record for that `messageId` once and re-enters the normal inbound pipeline.
 
 ### Service commands
 

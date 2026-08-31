@@ -73,6 +73,7 @@ const stageLabels = {
   polling_recovered: "轮询已恢复",
   queued: "等待发送",
   sending: "正在发送",
+  delivery_retry: "发送限流重试",
   recalling: "正在撤回",
   recalled: "已撤回",
   rejected: "已拒绝发送",
@@ -326,6 +327,10 @@ function selectEvent(event) {
     ["评论", event.commentId],
     ["回复", event.replyId],
     ["排队耗时", Number.isFinite(event.queueWaitMs) ? `${event.queueWaitMs} ms` : ""],
+    ["发送重试次数", event.deliveryRetryAttempts ?? event.retryAttempt],
+    ["下次重试序号", event.nextRetryAttempt],
+    ["重试等待", Number.isFinite(event.retryDelayMs) ? `${event.retryDelayMs} ms` : ""],
+    ["发送重试耗时", Number.isFinite(event.deliveryRetryElapsedMs) ? `${event.deliveryRetryElapsedMs} ms` : ""],
     ["耗时", Number.isFinite(event.durationMs) ? `${event.durationMs} ms` : ""],
     ["原因", event.reason],
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");

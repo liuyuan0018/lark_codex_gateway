@@ -24,9 +24,15 @@ test("new pending assignments keep their one-time setup state", () => {
     setupId: "setup-id",
     skillName: "incident-triage",
     skillVersion: "123456789abc",
+    originSenderId: "ou_reporter",
+    originSenderName: "Reporter",
+    originMessageId: "om_root",
   }, 5);
   assert.equal(assignment.setupStatus, "pending");
   assert.equal(assignment.initializationPending, true);
+  assert.equal(assignment.originSenderId, "ou_reporter");
+  assert.equal(assignment.originSenderName, "Reporter");
+  assert.equal(assignment.originMessageId, "om_root");
   assert.equal(topicSetupShouldRun(assignment), true);
 });
 

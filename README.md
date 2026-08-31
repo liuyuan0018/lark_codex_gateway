@@ -212,6 +212,7 @@ node scripts/run-gateway.mjs
 - A direct Feishu reply includes the one message it replies to.
 - Earlier group or topic history is included only when the current message explicitly asks for it, such as “use the logs above” or `#带上下文`.
 - New topic tasks receive a one-time initial snapshot, limited to 32 resources and 250 MiB.
+- Topic assignments retain the original topic message and sender. Every turn also receives a stable `cases/<setupId>/` directory for a durable `case-state.md` and collected evidence, so long investigations can resume without rediscovering targets and log ranges.
 - A message can provide up to eight images, each limited to 20 MiB.
 - Downloaded files remain inside the private gateway state directory.
 
@@ -229,7 +230,7 @@ Provider keys are never written to gateway configuration, event records, or logs
 | Windows | `%LOCALAPPDATA%\lark-codex-gateway\` |
 | Linux | `${XDG_STATE_HOME:-~/.local/state}/lark-codex-gateway/` |
 
-The directory contains local state, traffic history, logs, and downloaded attachments. Do not commit or share it.
+The directory contains local state, traffic history, logs, downloaded attachments, and per-topic case evidence. Do not commit or share it.
 
 For a normal machine migration:
 

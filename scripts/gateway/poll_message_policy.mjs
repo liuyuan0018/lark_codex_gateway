@@ -21,6 +21,10 @@ export function polledMessageSenderId(message) {
   );
 }
 
+export function polledMessageSenderName(message) {
+  return typeof message?.sender?.name === "string" ? message.sender.name.trim() : "";
+}
+
 export function isPollableMessage(message, options = {}) {
   if (message?.deleted) {
     return false;

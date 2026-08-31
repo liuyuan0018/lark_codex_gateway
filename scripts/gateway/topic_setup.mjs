@@ -26,6 +26,15 @@ export function normalizePersistedTopicAssignment(assignment, persistedVersion) 
     setupId: isCurrentState && typeof assignment.setupId === "string" ? assignment.setupId : "",
     skillName: isCurrentState && typeof assignment.skillName === "string" ? assignment.skillName : "",
     skillVersion: isCurrentState && typeof assignment.skillVersion === "string" ? assignment.skillVersion : "",
+    originSenderId: isCurrentState && typeof assignment.originSenderId === "string"
+      ? assignment.originSenderId
+      : "",
+    originSenderName: isCurrentState && typeof assignment.originSenderName === "string"
+      ? assignment.originSenderName
+      : "",
+    originMessageId: isCurrentState && typeof assignment.originMessageId === "string"
+      ? assignment.originMessageId
+      : "",
     initialContextMessageCount: isCurrentState && Number.isSafeInteger(assignment.initialContextMessageCount)
       ? assignment.initialContextMessageCount
       : 0,

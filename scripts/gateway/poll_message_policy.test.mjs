@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   isPollableMessage,
   polledMessageSenderId,
+  polledMessageSenderName,
   pollingRouteAcceptsChatMode,
 } from "./poll_message_policy.mjs";
 
@@ -33,6 +34,14 @@ test("filters the gateway bot by open bot id", () => {
   });
   assert.equal(polledMessageSenderId(ownMessage), "ou_gateway_bot");
   assert.equal(isPollableMessage(ownMessage, { botOpenId: "ou_gateway_bot" }), false);
+});
+
+test("preserves the display name returned by message queries", () => {
+  assert.equal(polledMessageSenderName(message({
+    sender_type: "user",
+    id: "ou_user",
+    name: " Reporter ",
+  })), "Reporter");
 });
 
 test("filters deleted, system, and malformed messages", () => {

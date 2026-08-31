@@ -189,7 +189,7 @@ The loopback dashboard shows:
 
 The MCP server exposes gateway-management tools for status, event search, proactive Bot messages, and Bot-message recall. Sending and recall still run through `lark-cli`; the gateway adds `allowedChatIds` / route enforcement and observable results. Use the existing `lark-cli` Skills directly for general Feishu operations that do not require gateway routing or reply management.
 
-A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. IM replies and proactive messages that receive an explicit HTTP 429 response reuse the original idempotency key for bounded backoff retries without running Codex again. A dashboard manual retry clears the saved record for that `messageId` once and re-enters the normal inbound pipeline.
+A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. IM replies and proactive messages that receive an explicit HTTP 429 response reuse the original idempotency key for bounded backoff retries without running Codex again. A dashboard manual retry clears the saved record for that `messageId` once, creates a fresh outbound idempotency scope, and re-enters the normal inbound pipeline.
 
 ### Service commands
 

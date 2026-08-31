@@ -15,6 +15,10 @@ import { createKeyedQueue } from "./keyed_queue.mjs";
 import { runWithLarkRateLimitRetry } from "./lark_rate_limit_retry.mjs";
 import { createObservability } from "./observability.mjs";
 import {
+  createManualRetryDeliveryScope,
+  replyIdempotencyKey,
+} from "./outbound_idempotency.mjs";
+import {
   isPollableMessage,
   polledMessageSenderId,
   pollingRouteAcceptsChatMode,
@@ -1998,10 +2002,7 @@ async function replyToMessage(event, text) {
   const chunks = splitReply(text);
   const replyMessageIds = [];
   for (let index = 0; index < chunks.length; index += 1) {
-    const idempotencyKey = createHash("sha256")
-      .update(`${event.event_id}:${index}`)
-      .digest("hex")
-      .slice(0, 32);
+    const idempotencyKey = replyIdempotencyKey(event, index);
     const retryResult = await runWithLarkRateLimitRetry(() => runCommand(
       larkCli.command,
       [
@@ -2442,6 +2443,7 @@ function approvalEventSnapshot(event) {
     codex_thread_id: event.codex_thread_id,
     codex_thread_title: event.codex_thread_title,
     codex_route_type: event.codex_route_type,
+    reply_idempotency_scope: event.reply_idempotency_scope,
   };
 }
 
@@ -3191,6 +3193,7 @@ async function retryInboundMessage(input) {
   }
   const event = eventFromPolledMessage(message.chat_id, message);
   event.ingress = "manual_retry";
+  event.reply_idempotency_scope = createManualRetryDeliveryScope(event.event_id);
   const queuedDuplicateReason = inboundDeduplicator.queuedDuplicateReason(event);
   if (queuedDuplicateReason) {
     const error = validationError("该飞书消息已经在网关队列中或正在处理");

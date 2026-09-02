@@ -74,7 +74,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | Ordinary chat in `allowedChatIds` | Bot event | Yes, for group messages | Created automatically and reused | Sent immediately |
 | Fixed route in `chatRoutes` | Bot event | Yes, for group messages | Existing task from configuration | Sent immediately |
-| Topic chat, or opted-in regular chat, in `topicChatRoutes` | Authorized-user polling of user and external-app messages | No | One task per topic, root message, or message thread | Approval by default; configurable per route |
+| Topic chat, or opted-in regular chat, in `topicChatRoutes` | Authorized-user polling of user and external-app messages | No | One task per topic/root message by default; `sessionScope: "chat"` shares one task for the whole chat | Approval by default; configurable per route |
 | Document comment | Feishu event | Event-dependent | Top-level `threadId` | Sent immediately |
 
 An unknown ordinary group is accepted only when its Bot event explicitly mentions the current Bot. The gateway then adds that `chat_id` to the active private configuration. Unknown groups are never added to user-identity polling.
@@ -155,7 +155,7 @@ Start with [`config.example.json`](config.example.json). The most important fiel
 | `allowedChatIds` | Ordinary chats that may enter through explicit Bot events. |
 | `commandSenderIds` | Users whose explicit `@Bot` requests must receive a Codex response. |
 | `chatRoutes` | Fixed ordinary-chat bindings to existing Codex task UUIDs. |
-| `topicChatRoutes` | Threaded polling configuration, including optional regular-chat opt-in, project Skill, initialization prompt, and reply approval policy. |
+| `topicChatRoutes` | Threaded polling configuration, including optional regular-chat opt-in, project Skill, initialization prompt, reply approval policy, and `sessionScope` (`thread` by default or `chat` to share one Codex task across the whole chat). |
 | `pollUserMessages` | Enables user-identity polling for `topicChatRoutes` only. It accepts user and external-app messages while excluding this gateway Bot's own messages. |
 | `pollIntervalMs` | Delay between topic-chat polls; defaults to `5000`. |
 | `groupContextMessages` | Maximum earlier messages attached when the current message explicitly requests history. |
@@ -169,12 +169,13 @@ Start with [`config.example.json`](config.example.json). The most important fiel
   "threadTitlePrefix": "Support topic",
   "replyApprovalRequired": true,
   "allowRegularChat": false,
+  "sessionScope": "thread",
   "skillName": "incident-triage",
   "initializationPrompt": "Act as the support assistant for this chat. Handle one topic per Codex task."
 }
 ```
 
-The configured project Skill must exist at `<codexWorkdir>/.agents/skills/<skillName>/SKILL.md`. A new topic task receives that Skill, the short initialization prompt, and a one-time snapshot of the topic. Later messages reuse the task without repeating old content.
+The configured project Skill must exist at `<codexWorkdir>/.agents/skills/<skillName>/SKILL.md`. A new `thread`-scoped task receives that Skill, the short initialization prompt, and a one-time snapshot of its topic. A `chat`-scoped route creates one shared task for the chat and injects the Skill and initialization prompt once; later messages reuse the task without creating per-message tasks.
 
 ## Dashboard and operations
 

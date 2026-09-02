@@ -147,6 +147,9 @@ function normalizeConfig(raw, configPath) {
     if (route?.allowRegularChat !== undefined && typeof route.allowRegularChat !== "boolean") {
       throw new Error(`topicChatRoutes[${index}].allowRegularChat 必须是布尔值`);
     }
+    if (route?.sessionScope !== undefined && route.sessionScope !== "thread" && route.sessionScope !== "chat") {
+      throw new Error(`topicChatRoutes[${index}].sessionScope 只支持 thread 或 chat`);
+    }
     return chatId;
   });
   if (new Set(topicRouteChatIds).size !== topicRouteChatIds.length) {

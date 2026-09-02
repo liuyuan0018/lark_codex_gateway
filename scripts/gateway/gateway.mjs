@@ -147,6 +147,9 @@ function readTopicChatRoutes(name) {
     if (item.allowRegularChat !== undefined && typeof item.allowRegularChat !== "boolean") {
       throw new Error(`${name}[${index}].allowRegularChat 必须是布尔值`);
     }
+    if (item.sessionScope !== undefined && item.sessionScope !== "thread" && item.sessionScope !== "chat") {
+      throw new Error(`${name}[${index}].sessionScope 只支持 thread 或 chat`);
+    }
     if (routes.has(chatId)) {
       throw new Error(`${name} 包含重复的 chatId: ${chatId}`);
     }
@@ -157,6 +160,7 @@ function readTopicChatRoutes(name) {
       threadTitlePrefix,
       replyApprovalRequired,
       allowRegularChat: item.allowRegularChat === true,
+      sessionScope: item.sessionScope === "chat" ? "chat" : "thread",
     });
   }
   return routes;
@@ -316,15 +320,17 @@ function log(level, message, fields = {}) {
 function eventObservationFields(event) {
   const fixedRoute = config.chatRoutes.get(event.chat_id);
   const topicRoute = config.topicChatRoutes.get(event.chat_id);
-  const topicAssignment = event.lark_thread_id
-    ? state.topicThreads[event.chat_id]?.[event.lark_thread_id]
-    : null;
+  const topicAssignment = topicRoute?.sessionScope === "chat"
+    ? state.chatThreads[event.chat_id]
+    : event.lark_thread_id
+      ? state.topicThreads[event.chat_id]?.[event.lark_thread_id]
+      : null;
   const assignedThread = event.source === "doc_comment"
     ? { threadId: config.threadId, threadTitle: "默认 Codex 任务", routeType: "doc_comment_default" }
     : fixedRoute
       ? { ...fixedRoute, routeType: "fixed_chat_route" }
       : topicRoute
-      ? { ...topicAssignment, routeType: "topic_thread_assignment" }
+      ? { ...topicAssignment, routeType: topicRoute.sessionScope === "chat" ? "chat_assignment_shared" : "topic_thread_assignment" }
       : { ...state.chatThreads[event.chat_id], routeType: "chat_assignment" };
   return {
     kind: event.source === "doc_comment" ? "doc_comment" : "message",
@@ -391,6 +397,12 @@ function getRuntimeStatus() {
       threadId: assignment.threadId,
       threadTitle: assignment.threadTitle,
       createdAt: assignment.createdAt,
+      initializedAt: assignment.initializedAt,
+      initializationPending: assignment.initializationPending,
+      setupStatus: assignment.setupStatus,
+      setupId: assignment.setupId,
+      skillName: assignment.skillName,
+      skillVersion: assignment.skillVersion,
     })),
     fixedChatRouteCount: config.chatRoutes.size,
     allowedChatCount: config.allowedChatIds.size,
@@ -408,6 +420,7 @@ function getRuntimeStatus() {
       initializationPromptChars: route.initializationPrompt.length,
       skillName: route.skillName,
       allowRegularChat: route.allowRegularChat,
+      sessionScope: route.sessionScope,
       verified: verifiedPollingChatModes.has(route.chatId),
       verifiedChatMode: verifiedPollingChatModes.get(route.chatId) || "",
     })),
@@ -492,6 +505,12 @@ async function loadState() {
               threadId: assignment.threadId,
               threadTitle: typeof assignment.threadTitle === "string" ? assignment.threadTitle : "",
               createdAt: typeof assignment.createdAt === "string" ? assignment.createdAt : "",
+              initializedAt: typeof assignment.initializedAt === "string" ? assignment.initializedAt : "",
+              initializationPending: assignment.initializationPending === true,
+              setupStatus: typeof assignment.setupStatus === "string" ? assignment.setupStatus : "",
+              setupId: typeof assignment.setupId === "string" ? assignment.setupId : "",
+              skillName: typeof assignment.skillName === "string" ? assignment.skillName : "",
+              skillVersion: typeof assignment.skillVersion === "string" ? assignment.skillVersion : "",
             };
           }
         }
@@ -1150,10 +1169,15 @@ function topicCaseDirectory(assignment) {
 }
 
 async function updateTopicThreadSetup(event, status, context = null) {
-  if (!event.codex_topic_setup || !event.lark_thread_id) {
+  if (!event.codex_topic_setup) {
     return;
   }
-  const assignment = state.topicThreads[event.chat_id]?.[event.lark_thread_id];
+  const isSharedChat = event.codex_route_type === "chat_assignment_shared";
+  const assignment = isSharedChat
+    ? state.chatThreads[event.chat_id]
+    : event.lark_thread_id
+      ? state.topicThreads[event.chat_id]?.[event.lark_thread_id]
+      : null;
   if (!assignment || (status === "running" && assignment.setupStatus !== "pending")) {
     return;
   }
@@ -1166,7 +1190,7 @@ async function updateTopicThreadSetup(event, status, context = null) {
     assignment.initialContextTruncated = context.initialTopicSnapshot.truncated;
   }
   const origin = context?.initialTopicOrigin;
-  if (origin && (!assignment.originMessageId || assignment.originMessageId === origin.messageId)) {
+  if (!isSharedChat && origin && (!assignment.originMessageId || assignment.originMessageId === origin.messageId)) {
     assignment.originMessageId = assignment.originMessageId || origin.messageId;
     assignment.originSenderId = assignment.originSenderId || origin.senderId;
     assignment.originSenderName = assignment.originSenderName || origin.senderName;
@@ -1218,8 +1242,74 @@ async function resolveThreadForEvent(event) {
 
   const topicRoute = config.topicChatRoutes.get(event.chat_id);
   if (topicRoute) {
-    event.codex_route_type = "topic_thread_assignment";
     const chatMode = await ensureTopicChatRoute(event, topicRoute);
+    if (topicRoute.sessionScope === "chat") {
+      let assignment = state.chatThreads[event.chat_id];
+      if (!assignment) {
+        const threadTitle = await loadChatTitle(event);
+        const topicInitializationPrompt = buildTopicInitializationPrompt(topicRoute);
+        const skillMetadata = await resolveTopicSkillMetadata(topicRoute);
+        const created = await createCodexAppServerThread({
+          command: codexCli.command,
+          prefixArgs: codexCli.prefixArgs,
+          threadTitle,
+          cwd: config.codexWorkdir,
+          model: config.codexModel,
+          effort: config.codexReasoningEffort,
+          timeoutMs: config.codexTimeoutMs,
+        });
+        const setupId = stableTopicSetupId(event.chat_id, "chat", created.threadId);
+        assignment = {
+          threadId: created.threadId,
+          threadTitle,
+          createdAt: new Date().toISOString(),
+          initializedAt: "",
+          initializationPending: true,
+          setupStatus: "pending",
+          setupId,
+          skillName: skillMetadata.skillName,
+          skillVersion: skillMetadata.skillVersion,
+        };
+        await fs.mkdir(topicCaseDirectory(assignment), { recursive: true });
+        state.chatThreads[event.chat_id] = assignment;
+        try {
+          await saveState();
+        } catch (error) {
+          delete state.chatThreads[event.chat_id];
+          throw error;
+        }
+        event.codex_initialization_prompt = topicInitializationPrompt;
+        event.codex_initial_topic_snapshot = false;
+        event.codex_topic_setup = true;
+        observe({
+          ...eventObservationFields(event),
+          direction: "internal",
+          stage: "thread_assigned",
+          status: "info",
+          summary: "已为飞书普通群创建共享 Codex 任务",
+        });
+      } else if (!assignment.setupStatus) {
+        const skillMetadata = await resolveTopicSkillMetadata(topicRoute);
+        assignment.setupId = assignment.setupId || stableTopicSetupId(event.chat_id, "chat", assignment.threadId);
+        assignment.initializedAt = assignment.initializedAt || "";
+        assignment.initializationPending = true;
+        assignment.setupStatus = "pending";
+        assignment.skillName = skillMetadata.skillName;
+        assignment.skillVersion = skillMetadata.skillVersion;
+        await fs.mkdir(topicCaseDirectory(assignment), { recursive: true });
+        await saveState();
+      }
+      event.codex_route_type = "chat_assignment_shared";
+      event.codex_thread_id = assignment.threadId;
+      event.codex_thread_title = assignment.threadTitle;
+      event.codex_case_directory = topicCaseDirectory(assignment);
+      await fs.mkdir(event.codex_case_directory, { recursive: true });
+      if (topicSetupShouldRun(assignment)) {
+        event.codex_initialization_prompt = event.codex_initialization_prompt || buildTopicInitializationPrompt(topicRoute);
+        event.codex_topic_setup = true;
+      }
+      return;
+    }
     event.codex_route_type = chatMode === "topic"
       ? "topic_thread_assignment"
       : "message_thread_assignment";
@@ -1750,7 +1840,7 @@ function buildMessagePrompt(event, context) {
     : null;
   const isAuthorizedBotCommand = config.commandSenderIds.has(event.sender_id) && eventMentionsCurrentBot(event);
   const replyDecisionInstructions = buildReplyDecisionInstructions({
-    topicMessage: ["topic_thread_assignment", "message_thread_assignment"].includes(
+    topicMessage: ["topic_thread_assignment", "message_thread_assignment", "chat_assignment_shared"].includes(
       event.codex_route_type,
     ),
     forceReply: isAuthorizedBotCommand,
@@ -3104,6 +3194,11 @@ async function routeQueueKeyForEvent(event) {
     return `session:${fixedRoute.threadId}`;
   }
   if (config.topicChatRoutes.has(event.chat_id)) {
+    const topicRoute = config.topicChatRoutes.get(event.chat_id);
+    if (topicRoute.sessionScope === "chat") {
+      event.codex_route_type = "chat_assignment_shared";
+      return `topic-chat:${event.chat_id}`;
+    }
     event.codex_route_type = "topic_thread_assignment";
     const currentMessage = await loadCurrentMessage(event);
     const larkThreadId = currentMessage.thread_id || currentMessage.message_id;

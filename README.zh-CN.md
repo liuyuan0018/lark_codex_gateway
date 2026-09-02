@@ -41,7 +41,7 @@
 
 | 能力 | 作用 |
 | --- | --- |
-| 🧭 确定性路由 | 普通群绑定一个任务；话题群按 `chat_id + thread_id` 绑定持久 Codex 任务。 |
+| 🧭 确定性路由 | 普通群绑定一个任务；话题群默认按 `chat_id + thread_id` 绑定持久 Codex 任务，普通群可用 `sessionScope: "chat"` 共享一个任务。 |
 | ⚡ 按任务并发 | 同一个 Codex 任务内保持顺序，不同任务可以并行处理。 |
 | 🖼️ 附件输入 | 调用 `lark-cli` 下载飞书资源，并将本地路径作为 Agent 输入。 |
 | 🧠 上下文控制 | 复用任务时仅提交当前消息；仅在用户明确要求时附加历史消息。 |
@@ -74,7 +74,7 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | `allowedChatIds` 普通群 | Bot 事件 | 需要 | 自动创建并复用 | 直接发送 |
 | `chatRoutes` 固定路由 | Bot 事件 | 需要 | 配置中已有的任务 | 直接发送 |
-| `topicChatRoutes` 话题群或显式允许的普通群 | 已授权用户身份轮询用户及其他应用消息 | 不需要 | 每个话题、根消息或消息线程一个任务 | 默认网页授权，可按群关闭 |
+| `topicChatRoutes` 话题群或显式允许的普通群 | 已授权用户身份轮询用户及其他应用消息 | 不需要 | 默认每个话题/根消息/消息线程一个任务；`sessionScope: "chat"` 时整个群共享一个任务 | 默认网页授权，可按群关闭 |
 | 文档评论 | 飞书事件 | 取决于事件 | 顶层 `threadId` | 直接发送 |
 
 陌生普通群只有在 Bot 事件明确 `@Bot` 时才会进入网关。网关会把该 `chat_id` 写入当前私有配置，但不会把陌生群加入用户身份轮询。
@@ -155,7 +155,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
 | `allowedChatIds` | 可以通过明确 Bot 事件进入网关的普通群。 |
 | `commandSenderIds` | 这些用户明确 `@Bot` 时，Codex 必须处理并回复。 |
 | `chatRoutes` | 把普通群固定绑定到当前机器已有的 Codex 任务 UUID。 |
-| `topicChatRoutes` | 配置线程化轮询、普通群显式开关、项目 Skill、初始化提示词和回复授权策略。 |
+| `topicChatRoutes` | 配置线程化轮询、普通群显式开关、项目 Skill、初始化提示词、回复授权策略和 `sessionScope`（默认 `thread`，可设为 `chat` 共享整个群的任务）。 |
 | `pollUserMessages` | 只为 `topicChatRoutes` 启用用户身份轮询；接收用户和其他应用消息，并排除网关 Bot 自己的消息。 |
 | `pollIntervalMs` | 话题群轮询间隔，默认 `5000` 毫秒。 |
 | `groupContextMessages` | 当前消息明确要求读取历史时，最多附带多少条更早的消息。 |
@@ -169,6 +169,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
   "threadTitlePrefix": "值班话题",
   "replyApprovalRequired": true,
   "allowRegularChat": false,
+  "sessionScope": "thread",
   "skillName": "incident-triage",
   "initializationPrompt": "你是本群的值班助手。每个话题只处理对应的问题。"
 }

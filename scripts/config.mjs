@@ -248,6 +248,35 @@ export async function addAllowedChatId(configPath, chatId) {
   return { added: true, config: updated, fingerprint: fingerprintConfig(updated) };
 }
 
+export async function replaceChatRouteThreadId(configPath, chatId, previousThreadId, replacementThreadId) {
+  if (!configPath || !CHAT_ID_PATTERN.test(chatId) || !THREAD_ID_PATTERN.test(previousThreadId) || !THREAD_ID_PATTERN.test(replacementThreadId)) {
+    throw new Error("替换固定群路由任务时参数无效");
+  }
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(configPath, "utf8"));
+  } catch (error) {
+    throw new Error(`读取网关配置失败：${configPath}：${error.message}`, { cause: error });
+  }
+  if (!Array.isArray(raw.chatRoutes)) {
+    throw new Error(`网关配置中不存在固定群路由：${chatId}`);
+  }
+  const route = raw.chatRoutes.find((item) => item?.chatId === chatId);
+  if (!route || route.threadId !== previousThreadId) {
+    throw new Error(`固定群路由任务引用已发生变化：${chatId}`);
+  }
+  route.threadId = replacementThreadId;
+  const temporaryPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(raw, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await rename(temporaryPath, configPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {});
+    throw new Error(`写入网关配置失败：${configPath}：${error.message}`, { cause: error });
+  }
+  return raw;
+}
+
 export function resolveGatewayConfigPath(pluginRoot) {
   const candidates = [];
   if (process.env.LARK_CODEX_GATEWAY_CONFIG) {

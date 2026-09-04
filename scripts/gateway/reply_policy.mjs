@@ -1,6 +1,15 @@
 export const NO_REPLY_TOKEN = "[NO_REPLY]";
 
-export function buildReplyDecisionInstructions({ topicMessage = false, forceReply = false } = {}) {
+export function isAutomatedFailureCard(messageType, content) {
+  return messageType === "interactive" &&
+    /(?:失败|异常|报错|error|failed|failure|build\s*fail)/i.test(String(content || ""));
+}
+
+export function buildReplyDecisionInstructions({
+  topicMessage = false,
+  forceReply = false,
+  automatedFailureCard = false,
+} = {}) {
   const instructions = [];
   if (topicMessage) {
     instructions.push(
@@ -9,6 +18,11 @@ export function buildReplyDecisionInstructions({ topicMessage = false, forceRepl
       "成员之间的对话、已被他人完整处理后的补充或确认、致谢、没有请求的状态同步、重复消息，通常不需要 Bot 回复。",
       `如果不需要回复，最终答案必须且只能是 ${NO_REPLY_TOKEN}；不要附加解释。网关会把这个决定记录为 no_reply。`,
     );
+    if (automatedFailureCard) {
+      instructions.push(
+        "当前消息是外部应用发送的构建/运行失败卡片。此类异常通知属于需要 Bot 介入的请求，即使没有人明确 @Bot 或提出问题，也必须读取相关任务、日志或上下文并给出诊断结果；不得因为它是卡片、来自外部应用或没有自然语言提问而返回 [NO_REPLY]。",
+      );
+    }
   }
   if (forceReply) {
     instructions.push(

@@ -13,6 +13,7 @@ import { messageRequestsGroupHistory } from "./context_policy.mjs";
 import { createInboundDeduplicator } from "./inbound_dedup.mjs";
 import { createKeyedQueue } from "./keyed_queue.mjs";
 import { runWithLarkRateLimitRetry } from "./lark_rate_limit_retry.mjs";
+import { isInvalidPersistedThreadReference } from "./session_recovery.mjs";
 import { createObservability } from "./observability.mjs";
 import {
   createManualRetryDeliveryScope,
@@ -26,6 +27,7 @@ import {
 } from "./poll_message_policy.mjs";
 import {
   buildReplyDecisionInstructions,
+  isAutomatedFailureCard,
   noReplyObservationFields,
   shouldSuppressReply,
   topicReplyNeedsApproval as topicRouteReplyNeedsApproval,
@@ -35,7 +37,7 @@ import {
   normalizePersistedTopicAssignment,
   topicSetupShouldRun,
 } from "./topic_setup.mjs";
-import { addAllowedChatId, defaultStateDirectory } from "../config.mjs";
+import { addAllowedChatId, defaultStateDirectory, replaceChatRouteThreadId } from "../config.mjs";
 
 const gatewayDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(gatewayDirectory, "..", "..");
@@ -1042,6 +1044,25 @@ async function runLarkJson(args, timeoutMs = 30000, options = {}) {
   }
 }
 
+async function markMessageProcessingFailure(event) {
+  if (event.source === "doc_comment" || typeof event.message_id !== "string" || !event.message_id.startsWith("om_")) {
+    throw new Error("当前事件不支持添加消息表情");
+  }
+  await runLarkJson([
+    "im",
+    "reactions",
+    "create",
+    "--params",
+    JSON.stringify({ message_id: event.message_id }),
+    "--data",
+    JSON.stringify({ reaction_type: { emoji_type: "ERROR" } }),
+    "--as",
+    "bot",
+    "--format",
+    "json",
+  ], 30000);
+}
+
 async function loadChatTitle(event) {
   try {
     const result = await runLarkJson([
@@ -1839,11 +1860,13 @@ function buildMessagePrompt(event, context) {
     ? state.topicThreads[event.chat_id]?.[event.lark_thread_id]
     : null;
   const isAuthorizedBotCommand = config.commandSenderIds.has(event.sender_id) && eventMentionsCurrentBot(event);
+  const automatedFailureCard = isAutomatedFailureCard(event.message_type, event.content);
   const replyDecisionInstructions = buildReplyDecisionInstructions({
     topicMessage: ["topic_thread_assignment", "message_thread_assignment", "chat_assignment_shared"].includes(
       event.codex_route_type,
     ),
     forceReply: isAuthorizedBotCommand,
+    automatedFailureCard,
   });
   if (event.codex_topic_setup) {
     sections.push(
@@ -2084,10 +2107,11 @@ async function loadEventContext(event) {
 }
 
 async function askCodex(event, context) {
-  const retryResult = await runWithActiveWriterRetry(() => runCodexAppServerTurn({
+  const runTurn = () => runWithActiveWriterRetry(() => runCodexAppServerTurn({
     command: codexCli.command,
     prefixArgs: codexCli.prefixArgs,
     threadId: event.codex_thread_id,
+    threadTitle: event.codex_thread_title,
     prompt: buildCodexPrompt(event, context),
     localImages: event.local_image_paths || [],
     cwd: config.codexWorkdir,
@@ -2120,6 +2144,90 @@ async function askCodex(event, context) {
       });
     },
   });
+
+  let retryResult;
+  try {
+    retryResult = await runTurn();
+  } catch (error) {
+    const routeCanPersistReplacement = [
+      "fixed_chat_route",
+      "chat_assignment",
+      "chat_assignment_shared",
+      "topic_thread_assignment",
+      "message_thread_assignment",
+    ].includes(event.codex_route_type);
+    if (!routeCanPersistReplacement || !isInvalidPersistedThreadReference(error)) {
+      throw error;
+    }
+    const previousThreadId = event.codex_thread_id;
+    const replacement = await createCodexAppServerThread({
+      command: codexCli.command,
+      prefixArgs: codexCli.prefixArgs,
+      threadTitle: event.codex_thread_title,
+      cwd: config.codexWorkdir,
+      model: config.codexModel,
+      effort: config.codexReasoningEffort,
+      timeoutMs: config.codexTimeoutMs,
+    });
+    const replacementThreadId = replacement?.threadId;
+    if (typeof replacementThreadId !== "string" || !THREAD_ID_PATTERN.test(replacementThreadId)) {
+      throw new Error("恢复失效 Codex session 时，新任务缺少有效 thread.id", { cause: error });
+    }
+    const assignment = event.codex_route_type === "chat_assignment_shared" || event.codex_route_type === "chat_assignment"
+      ? state.chatThreads[event.chat_id]
+      : state.topicThreads[event.chat_id]?.[event.lark_thread_id];
+    const fixedRoute = event.codex_route_type === "fixed_chat_route"
+      ? config.chatRoutes.get(event.chat_id)
+      : null;
+    if (event.codex_route_type === "fixed_chat_route" && (!fixedRoute || fixedRoute.threadId !== previousThreadId)) {
+      throw new Error("恢复失效固定群 Codex session 时，持久化绑定已发生变化", { cause: error });
+    }
+    if (event.codex_route_type !== "fixed_chat_route" && (!assignment || assignment.threadId !== previousThreadId)) {
+      throw new Error("恢复失效 Codex session 时，持久化绑定已发生变化", { cause: error });
+    }
+    if (fixedRoute) {
+      await replaceChatRouteThreadId(config.configPath, event.chat_id, previousThreadId, replacementThreadId);
+      fixedRoute.threadId = replacementThreadId;
+    } else {
+      assignment.threadId = replacementThreadId;
+      assignment.createdAt = new Date().toISOString();
+    }
+    const topicRoute = config.topicChatRoutes.get(event.chat_id);
+    if (topicRoute) {
+      assignment.initializedAt = "";
+      assignment.initializationPending = true;
+      assignment.setupStatus = "pending";
+      assignment.setupId = stableTopicSetupId(
+        event.chat_id,
+        event.codex_route_type === "chat_assignment_shared" ? "chat" : event.lark_thread_id,
+        replacementThreadId,
+      );
+      event.codex_initialization_prompt = buildTopicInitializationPrompt(topicRoute);
+      event.codex_topic_setup = true;
+      event.codex_topic_setup_started = true;
+      event.codex_case_directory = topicCaseDirectory(assignment);
+      await fs.mkdir(event.codex_case_directory, { recursive: true });
+    }
+    event.codex_thread_id = replacementThreadId;
+    await saveState();
+    observe({
+      ...eventObservationFields(event),
+      direction: "internal",
+      stage: "session_recreated",
+      status: "info",
+      summary: "持久化 Codex session 引用失效，已创建并切换到新任务",
+      previousThreadId,
+      replacementThreadId,
+    });
+    log("warn", "持久化 Codex session 引用失效，已创建并切换到新任务", {
+      eventId: event.event_id,
+      chatId: event.chat_id,
+      larkThreadId: event.lark_thread_id,
+      previousThreadId,
+      replacementThreadId,
+    });
+    retryResult = await runTurn();
+  }
   const result = retryResult.value;
   event.codex_retry_attempts = retryResult.attempts;
   event.codex_retry_elapsed_ms = retryResult.elapsedMs;
@@ -2968,34 +3076,48 @@ async function processEvent(event, options = {}) {
       retryAttempts: error.activeWriterRetryAttempts,
       retryElapsedMs: error.activeWriterRetryElapsedMs,
     });
-    if (config.replyEnabled) {
-      const failureText = "Codex 处理失败，请查看网关日志。";
-      const failureDelivery = topicReplyNeedsApproval(event)
-        ? queueTopicReplyApproval(event, failureText, "话题群失败说明等待授权")
-        : replyToLark(event, failureText, context).then((failureReplyIds) => {
-            observe({
-              ...eventObservationFields(event),
-              direction: "outbound",
-              stage: "sent",
-              status: "success",
-              summary: "已发送失败说明",
-              content: failureText,
-              destinationIds: failureReplyIds,
-            });
-          });
-      await failureDelivery.catch((replyError) => {
+    if (config.replyEnabled && event.source !== "doc_comment") {
+      const failureReaction = markMessageProcessingFailure(event).then(() => {
+        observe({
+          ...eventObservationFields(event),
+          direction: "outbound",
+          stage: "reaction_added",
+          status: "success",
+          summary: "已在原消息添加失败表情",
+          reactionType: "ERROR",
+        });
+      });
+      await failureReaction.catch((replyError) => {
         observe({
           ...eventObservationFields(event),
           direction: "outbound",
           stage: "failed",
           status: "error",
-          summary: "失败说明发送失败",
+          summary: "添加失败表情失败",
+          reason: replyError.message,
+        });
+        log("error", "在飞书原消息添加失败表情失败", {
+          eventId: event.event_id,
+          messageId: event.message_id,
+          commentId: event.comment_id,
+          error: replyError.message,
+        });
+      });
+    } else if (config.replyEnabled && event.source === "doc_comment") {
+      const failureText = "Codex 处理失败，请查看网关日志。";
+      await replyToLark(event, failureText, context).catch((replyError) => {
+        observe({
+          ...eventObservationFields(event),
+          direction: "outbound",
+          stage: "failed",
+          status: "error",
+          summary: "文档评论失败说明发送失败",
           content: failureText,
           reason: replyError.message,
         });
-        log("error", "发送失败说明到飞书失败", {
+        log("error", "发送文档评论失败说明失败", {
           eventId: event.event_id,
-          messageId: event.message_id,
+          fileToken: event.file_token,
           commentId: event.comment_id,
           error: replyError.message,
         });

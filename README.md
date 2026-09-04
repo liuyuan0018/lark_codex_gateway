@@ -46,9 +46,9 @@ The gateway delegates Feishu operations to `lark-cli`. Its send and recall tools
 | 🖼️ Attachment handoff | Uses `lark-cli` to download Feishu resources, then gives their local paths to the Agent. |
 | 🧠 Context control | Sends only the current message to reused tasks unless the user explicitly asks for earlier chat history. |
 | ✋ Reply approval | Holds selected topic replies for dashboard approval; operators can approve or reject them. |
-| 🤫 Intentional silence | Records `[NO_REPLY]` as a successful Agent decision instead of looking like a dropped message. |
+| 🤫 Intentional silence | Records `[NO_REPLY]` as a successful Agent decision instead of looking like a dropped message. External-app build/runtime failure cards are always actionable and must not be silenced. |
 | 🔍 End-to-end observability | Uses the Feishu `eventId` as the problem ID across receive, queue, Codex, approval, send, and failure stages. |
-| 🛡️ Duplicate and conflict protection | Coalesces the same `messageId` across Bot events and user polling, then retries transient Codex active-writer conflicts with bounded backoff. |
+| 🛡️ Duplicate and conflict protection | Coalesces the same `messageId` across Bot events and user polling, retries transient Codex active-writer conflicts with bounded backoff, and recreates invalid persisted session references. |
 | ↩️ Managed Bot operations | Applies gateway policy and observability when `lark-cli` sends or recalls Bot messages. |
 
 ## Architecture and message flow

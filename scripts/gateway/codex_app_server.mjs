@@ -57,6 +57,7 @@ async function runCodexAppServer(options) {
     model = "gpt-5.6-sol",
     effort = "high",
     timeoutMs,
+    skipResume = false,
     clientName = "lark-codex-gateway",
     clientTitle = "Lark Codex Gateway",
     clientVersion = "1.0.0",
@@ -229,12 +230,14 @@ async function runCodexAppServer(options) {
     let activeThreadId = threadId;
     let created = false;
     if (activeThreadId) {
-      await request("thread/resume", buildThreadResumeParams({
-        threadId: activeThreadId,
-        cwd,
-        model,
-        effort,
-      }));
+      if (!skipResume) {
+        await request("thread/resume", buildThreadResumeParams({
+          threadId: activeThreadId,
+          cwd,
+          model,
+          effort,
+        }));
+      }
     } else {
       const startedThread = await request(
         "thread/start",

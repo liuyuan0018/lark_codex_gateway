@@ -3,6 +3,7 @@ const INVALID_THREAD_PATTERNS = [
   /(?:not found|unknown|does not exist|doesn't exist|invalid|unavailable|no longer available|deleted)[^\n]{0,80}(?:thread|conversation|session)/i,
   /(?:任务|会话|线程)[^\n]{0,30}(?:不存在|无效|失效|已删除|找不到)/,
   /(?:不存在|无效|失效|已删除|找不到)[^\n]{0,30}(?:任务|会话|线程)/,
+  /no rollout found for thread id/i,
 ];
 
 export function isInvalidPersistedThreadReference(error) {

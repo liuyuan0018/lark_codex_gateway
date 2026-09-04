@@ -1302,6 +1302,7 @@ async function resolveThreadForEvent(event) {
         event.codex_initialization_prompt = topicInitializationPrompt;
         event.codex_initial_topic_snapshot = false;
         event.codex_topic_setup = true;
+        event.codex_thread_created = true;
         observe({
           ...eventObservationFields(event),
           direction: "internal",
@@ -1407,6 +1408,7 @@ async function resolveThreadForEvent(event) {
       event.codex_initialization_prompt = topicInitializationPrompt;
       event.codex_initial_topic_snapshot = true;
       event.codex_topic_setup = true;
+      event.codex_thread_created = true;
     }
     if (!assignment.setupId) {
       assignment.setupId = stableTopicSetupId(event.chat_id, larkThreadId, assignment.threadId);
@@ -1460,6 +1462,7 @@ async function resolveThreadForEvent(event) {
       threadId: assignment.threadId,
       threadTitle: assignment.threadTitle,
     });
+    event.codex_thread_created = true;
   }
   event.codex_thread_id = assignment.threadId;
   event.codex_thread_title = assignment.threadTitle;
@@ -2107,7 +2110,7 @@ async function loadEventContext(event) {
 }
 
 async function askCodex(event, context) {
-  const runTurn = () => runWithActiveWriterRetry(() => runCodexAppServerTurn({
+  const runTurn = ({ skipResume = false } = {}) => runWithActiveWriterRetry(() => runCodexAppServerTurn({
     command: codexCli.command,
     prefixArgs: codexCli.prefixArgs,
     threadId: event.codex_thread_id,
@@ -2118,6 +2121,7 @@ async function askCodex(event, context) {
     model: config.codexModel,
     effort: config.codexReasoningEffort,
     timeoutMs: config.codexTimeoutMs,
+    skipResume,
   }), {
     maxAttempts: config.activeWriterMaxAttempts,
     initialDelayMs: config.activeWriterInitialDelayMs,
@@ -2147,7 +2151,7 @@ async function askCodex(event, context) {
 
   let retryResult;
   try {
-    retryResult = await runTurn();
+    retryResult = await runTurn({ skipResume: event.codex_thread_created === true });
   } catch (error) {
     const routeCanPersistReplacement = [
       "fixed_chat_route",
@@ -2226,7 +2230,7 @@ async function askCodex(event, context) {
       previousThreadId,
       replacementThreadId,
     });
-    retryResult = await runTurn();
+    retryResult = await runTurn({ skipResume: true });
   }
   const result = retryResult.value;
   event.codex_retry_attempts = retryResult.attempts;

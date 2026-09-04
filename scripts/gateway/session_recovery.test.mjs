@@ -14,6 +14,11 @@ test("recognizes an invalid persisted thread resume error", () => {
     rpcCode: -32000,
     rpcMessage: "任务不存在",
   }), true);
+  assert.equal(isInvalidPersistedThreadReference({
+    rpcMethod: "thread/resume",
+    rpcCode: -32600,
+    rpcMessage: "no rollout found for thread id 01abc",
+  }), true);
 });
 
 test("does not classify active writer or unrelated errors as an invalid reference", () => {

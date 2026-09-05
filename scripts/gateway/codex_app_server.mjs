@@ -229,15 +229,13 @@ async function runCodexAppServer(options) {
     writeMessage({ method: "initialized" });
     let activeThreadId = threadId;
     let created = false;
-    if (activeThreadId) {
-      if (!skipResume) {
-        await request("thread/resume", buildThreadResumeParams({
-          threadId: activeThreadId,
-          cwd,
-          model,
-          effort,
-        }));
-      }
+    if (activeThreadId && !skipResume) {
+      await request("thread/resume", buildThreadResumeParams({
+        threadId: activeThreadId,
+        cwd,
+        model,
+        effort,
+      }));
     } else {
       const startedThread = await request(
         "thread/start",

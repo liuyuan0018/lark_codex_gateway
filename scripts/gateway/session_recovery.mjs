@@ -7,7 +7,7 @@ const INVALID_THREAD_PATTERNS = [
 ];
 
 export function isInvalidPersistedThreadReference(error) {
-  if (error?.rpcMethod !== "thread/resume") {
+  if (!["thread/resume", "turn/start"].includes(error?.rpcMethod)) {
     return false;
   }
   const message = `${error?.rpcMessage || ""}\n${error?.message || ""}`;

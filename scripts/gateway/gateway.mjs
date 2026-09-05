@@ -2164,19 +2164,6 @@ async function askCodex(event, context) {
       throw error;
     }
     const previousThreadId = event.codex_thread_id;
-    const replacement = await createCodexAppServerThread({
-      command: codexCli.command,
-      prefixArgs: codexCli.prefixArgs,
-      threadTitle: event.codex_thread_title,
-      cwd: config.codexWorkdir,
-      model: config.codexModel,
-      effort: config.codexReasoningEffort,
-      timeoutMs: config.codexTimeoutMs,
-    });
-    const replacementThreadId = replacement?.threadId;
-    if (typeof replacementThreadId !== "string" || !THREAD_ID_PATTERN.test(replacementThreadId)) {
-      throw new Error("恢复失效 Codex session 时，新任务缺少有效 thread.id", { cause: error });
-    }
     const assignment = event.codex_route_type === "chat_assignment_shared" || event.codex_route_type === "chat_assignment"
       ? state.chatThreads[event.chat_id]
       : state.topicThreads[event.chat_id]?.[event.lark_thread_id];
@@ -2189,28 +2176,36 @@ async function askCodex(event, context) {
     if (event.codex_route_type !== "fixed_chat_route" && (!assignment || assignment.threadId !== previousThreadId)) {
       throw new Error("恢复失效 Codex session 时，持久化绑定已发生变化", { cause: error });
     }
+    event.codex_thread_id = null;
+    const topicRoute = config.topicChatRoutes.get(event.chat_id);
+    if (topicRoute) {
+      assignment.initializedAt = "";
+      assignment.initializationPending = true;
+      assignment.setupStatus = "pending";
+      event.codex_initialization_prompt = buildTopicInitializationPrompt(topicRoute);
+      event.codex_topic_setup = true;
+      event.codex_topic_setup_started = true;
+      event.codex_case_directory = topicCaseDirectory(assignment);
+      await fs.mkdir(event.codex_case_directory, { recursive: true });
+    }
+    retryResult = await runTurn({ skipResume: true });
+    const replacementThreadId = retryResult.value?.threadId;
+    if (typeof replacementThreadId !== "string" || !THREAD_ID_PATTERN.test(replacementThreadId)) {
+      throw new Error("恢复失效 Codex session 时，新任务缺少有效 thread.id", { cause: error });
+    }
     if (fixedRoute) {
       await replaceChatRouteThreadId(config.configPath, event.chat_id, previousThreadId, replacementThreadId);
       fixedRoute.threadId = replacementThreadId;
     } else {
       assignment.threadId = replacementThreadId;
       assignment.createdAt = new Date().toISOString();
-    }
-    const topicRoute = config.topicChatRoutes.get(event.chat_id);
-    if (topicRoute) {
-      assignment.initializedAt = "";
-      assignment.initializationPending = true;
-      assignment.setupStatus = "pending";
-      assignment.setupId = stableTopicSetupId(
-        event.chat_id,
-        event.codex_route_type === "chat_assignment_shared" ? "chat" : event.lark_thread_id,
-        replacementThreadId,
-      );
-      event.codex_initialization_prompt = buildTopicInitializationPrompt(topicRoute);
-      event.codex_topic_setup = true;
-      event.codex_topic_setup_started = true;
-      event.codex_case_directory = topicCaseDirectory(assignment);
-      await fs.mkdir(event.codex_case_directory, { recursive: true });
+      if (config.topicChatRoutes.has(event.chat_id)) {
+        assignment.setupId = stableTopicSetupId(
+          event.chat_id,
+          event.codex_route_type === "chat_assignment_shared" ? "chat" : event.lark_thread_id,
+          replacementThreadId,
+        );
+      }
     }
     event.codex_thread_id = replacementThreadId;
     await saveState();
@@ -2230,9 +2225,42 @@ async function askCodex(event, context) {
       previousThreadId,
       replacementThreadId,
     });
-    retryResult = await runTurn({ skipResume: true });
   }
   const result = retryResult.value;
+  if (event.codex_thread_created === true && result.threadId && result.threadId !== event.codex_thread_id) {
+    const assignment = event.codex_route_type === "chat_assignment_shared" || event.codex_route_type === "chat_assignment"
+      ? state.chatThreads[event.chat_id]
+      : state.topicThreads[event.chat_id]?.[event.lark_thread_id];
+    const fixedRoute = event.codex_route_type === "fixed_chat_route"
+      ? config.chatRoutes.get(event.chat_id)
+      : null;
+    if (fixedRoute && fixedRoute.threadId === event.codex_thread_id) {
+      await replaceChatRouteThreadId(config.configPath, event.chat_id, event.codex_thread_id, result.threadId);
+      fixedRoute.threadId = result.threadId;
+    } else if (assignment && assignment.threadId === event.codex_thread_id) {
+      assignment.threadId = result.threadId;
+      assignment.createdAt = new Date().toISOString();
+      if (config.topicChatRoutes.has(event.chat_id)) {
+        assignment.setupId = stableTopicSetupId(
+          event.chat_id,
+          event.codex_route_type === "chat_assignment_shared" ? "chat" : event.lark_thread_id,
+          result.threadId,
+        );
+        event.codex_case_directory = topicCaseDirectory(assignment);
+        await fs.mkdir(event.codex_case_directory, { recursive: true });
+      }
+    }
+    event.codex_thread_id = result.threadId;
+    await saveState();
+    observe({
+      ...eventObservationFields(event),
+      direction: "internal",
+      stage: "session_created",
+      status: "info",
+      summary: "已在当前 Codex 进程创建并绑定新任务",
+      replacementThreadId: result.threadId,
+    });
+  }
   event.codex_retry_attempts = retryResult.attempts;
   event.codex_retry_elapsed_ms = retryResult.elapsedMs;
   log("info", "Codex App Server 回合完成", {

@@ -13,6 +13,10 @@ import { messageRequestsGroupHistory } from "./context_policy.mjs";
 import { createInboundDeduplicator } from "./inbound_dedup.mjs";
 import { createKeyedQueue } from "./keyed_queue.mjs";
 import { runWithLarkRateLimitRetry } from "./lark_rate_limit_retry.mjs";
+import {
+  MESSAGE_STATUS_REACTIONS,
+  createMessageStatusReactionController,
+} from "./message_status_reactions.mjs";
 import { isInvalidPersistedThreadReference } from "./session_recovery.mjs";
 import { createObservability } from "./observability.mjs";
 import {
@@ -1044,23 +1048,117 @@ async function runLarkJson(args, timeoutMs = 30000, options = {}) {
   }
 }
 
-async function markMessageProcessingFailure(event) {
-  if (event.source === "doc_comment" || typeof event.message_id !== "string" || !event.message_id.startsWith("om_")) {
-    throw new Error("当前事件不支持添加消息表情");
-  }
-  await runLarkJson([
+const messageStatusReactions = createMessageStatusReactionController({
+  createReaction: (messageId, emojiType) => runLarkJson([
     "im",
     "reactions",
     "create",
     "--params",
-    JSON.stringify({ message_id: event.message_id }),
+    JSON.stringify({ message_id: messageId }),
     "--data",
-    JSON.stringify({ reaction_type: { emoji_type: "ERROR" } }),
+    JSON.stringify({ reaction_type: { emoji_type: emojiType } }),
     "--as",
     "bot",
     "--format",
     "json",
-  ], 30000);
+  ], 30000),
+  deleteReaction: (messageId, reactionId) => runLarkJson([
+    "im",
+    "reactions",
+    "delete",
+    "--params",
+    JSON.stringify({ message_id: messageId, reaction_id: reactionId }),
+    "--as",
+    "bot",
+    "--format",
+    "json",
+  ], 30000),
+});
+
+function logReactionCleanupErrors(event, result, targetStatus) {
+  for (const error of result.cleanupErrors || []) {
+    log("error", "清理飞书消息旧状态表情失败", {
+      eventId: event.event_id,
+      messageId: event.message_id,
+      targetStatus,
+      error: error.message,
+    });
+  }
+}
+
+async function setMessageStatusReaction(event, status, summary) {
+  if (!config.replyEnabled) {
+    return;
+  }
+  const reactionType = MESSAGE_STATUS_REACTIONS[status];
+  try {
+    const result = await messageStatusReactions.set(event, reactionType);
+    if (!result.supported || !result.changed) {
+      return;
+    }
+    logReactionCleanupErrors(event, result, status);
+    observe({
+      ...eventObservationFields(event),
+      direction: "outbound",
+      stage: "reaction_added",
+      status: "success",
+      summary,
+      reactionType,
+    });
+  } catch (error) {
+    observe({
+      ...eventObservationFields(event),
+      direction: "outbound",
+      stage: "reaction_failed",
+      status: "error",
+      summary: `${summary}失败`,
+      reason: error.message,
+      reactionType,
+    });
+    log("error", `${summary}失败`, {
+      eventId: event.event_id,
+      messageId: event.message_id,
+      reactionType,
+      error: error.message,
+    });
+  }
+}
+
+async function clearMessageStatusReaction(event) {
+  if (!config.replyEnabled) {
+    return;
+  }
+  try {
+    const result = await messageStatusReactions.clear(event);
+    if (!result.supported) {
+      return;
+    }
+    logReactionCleanupErrors(event, result, "completed");
+    if (!result.changed) {
+      return;
+    }
+    observe({
+      ...eventObservationFields(event),
+      direction: "outbound",
+      stage: "reaction_removed",
+      status: "success",
+      summary: "已清理消息处理状态表情",
+    });
+  } catch (error) {
+    observe({
+      ...eventObservationFields(event),
+      direction: "outbound",
+      stage: "reaction_failed",
+      status: "error",
+      summary: "清理消息处理状态表情失败",
+      reason: error.message,
+    });
+    log("error", "清理飞书消息处理状态表情失败", {
+      eventId: event.event_id,
+      messageId: event.message_id,
+      error: error.message,
+    });
+  }
 }
 
 async function loadChatTitle(event) {
@@ -3003,6 +3101,7 @@ async function processEvent(event, options = {}) {
     if (event.source !== "doc_comment") {
       recordInbound("accepted", event.content, "飞书聊天请求");
     }
+    await setMessageStatusReaction(event, "processing", "已标记 Codex 正在处理");
     observe({
       ...eventObservationFields(event),
       direction: "internal",
@@ -3075,6 +3174,7 @@ async function processEvent(event, options = {}) {
       retryAttempts: event.codex_retry_attempts,
       retryElapsedMs: event.codex_retry_elapsed_ms,
     });
+    await clearMessageStatusReaction(event);
   } catch (error) {
     if (event.codex_topic_setup_started) {
       await updateTopicThreadSetup(event, "failed", context).catch((stateError) => {
@@ -3109,32 +3209,7 @@ async function processEvent(event, options = {}) {
       retryElapsedMs: error.activeWriterRetryElapsedMs,
     });
     if (config.replyEnabled && event.source !== "doc_comment") {
-      const failureReaction = markMessageProcessingFailure(event).then(() => {
-        observe({
-          ...eventObservationFields(event),
-          direction: "outbound",
-          stage: "reaction_added",
-          status: "success",
-          summary: "已在原消息添加失败表情",
-          reactionType: "ERROR",
-        });
-      });
-      await failureReaction.catch((replyError) => {
-        observe({
-          ...eventObservationFields(event),
-          direction: "outbound",
-          stage: "failed",
-          status: "error",
-          summary: "添加失败表情失败",
-          reason: replyError.message,
-        });
-        log("error", "在飞书原消息添加失败表情失败", {
-          eventId: event.event_id,
-          messageId: event.message_id,
-          commentId: event.comment_id,
-          error: replyError.message,
-        });
-      });
+      await setMessageStatusReaction(event, "failed", "已在原消息添加失败表情");
     } else if (config.replyEnabled && event.source === "doc_comment") {
       const failureText = "Codex 处理失败，请查看网关日志。";
       await replyToLark(event, failureText, context).catch((replyError) => {
@@ -3336,6 +3411,7 @@ async function prepareEventForQueue(event) {
       return rejectDuplicate(reservation.reason);
     }
   }
+  await setMessageStatusReaction(event, "received", "网关已收到消息");
   return { accepted: true, reserved: true };
 }
 

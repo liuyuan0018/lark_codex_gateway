@@ -192,6 +192,8 @@ The MCP server exposes gateway-management tools for status, event search, proact
 
 A Feishu chat message is processed only once even if it arrives through both the Bot event stream and user polling; each `eventId` remains available for tracing. When a Codex task temporarily has an active writer, the gateway retries inside the same session queue and does not send a failure notice before the bounded retry budget is exhausted. IM replies and proactive messages that receive an explicit HTTP 429 response reuse the original idempotency key for bounded backoff retries without running Codex again. A dashboard manual retry clears the saved record for that `messageId` once, creates a fresh outbound idempotency scope, and re-enters the normal inbound pipeline.
 
+For each accepted chat message, the Bot first adds an `OK` reaction to show that the gateway received and queued it. The reaction switches to `Typing` when the message obtains its Codex session execution slot. The status reaction is removed when Codex completes, or switches to `ERROR` when processing fails. Duplicate and filtered messages, as well as document comments, do not use these status reactions.
+
 ### Service commands
 
 ```bash

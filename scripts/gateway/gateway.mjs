@@ -61,6 +61,16 @@ const CHAT_ID_PATTERN = /^oc_[A-Za-z0-9]+$/;
 const THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LARK_THREAD_ID_PATTERN = /^(?:om|omt)_/;
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CODEX_REASONING_EFFORTS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
 const IMAGE_KEY_PATTERN = /^img_[A-Za-z0-9_-]+$/;
 const MAX_MESSAGE_IMAGES = 8;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -130,6 +140,9 @@ function readTopicChatRoutes(name) {
       ? item.initializationPrompt.trim()
       : "";
     const skillName = typeof item.skillName === "string" ? item.skillName.trim() : "";
+    const codexReasoningEffort = typeof item.codexReasoningEffort === "string"
+      ? item.codexReasoningEffort.trim().toLowerCase()
+      : "";
     const threadTitlePrefix = typeof item.threadTitlePrefix === "string"
       ? item.threadTitlePrefix.trim()
       : "飞书话题";
@@ -158,6 +171,11 @@ function readTopicChatRoutes(name) {
     if (item.sessionScope !== undefined && item.sessionScope !== "thread" && item.sessionScope !== "chat") {
       throw new Error(`${name}[${index}].sessionScope 只支持 thread 或 chat`);
     }
+    if (item.codexReasoningEffort !== undefined && !CODEX_REASONING_EFFORTS.has(codexReasoningEffort)) {
+      throw new Error(
+        `${name}[${index}].codexReasoningEffort 必须是 ${[...CODEX_REASONING_EFFORTS].join("、")} 之一`,
+      );
+    }
     if (routes.has(chatId)) {
       throw new Error(`${name} 包含重复的 chatId: ${chatId}`);
     }
@@ -169,6 +187,7 @@ function readTopicChatRoutes(name) {
       replyApprovalRequired,
       allowRegularChat: item.allowRegularChat === true,
       sessionScope: item.sessionScope === "chat" ? "chat" : "thread",
+      codexReasoningEffort,
     });
   }
   return routes;
@@ -435,6 +454,7 @@ function getRuntimeStatus() {
       skillName: route.skillName,
       allowRegularChat: route.allowRegularChat,
       sessionScope: route.sessionScope,
+      codexReasoningEffort: route.codexReasoningEffort || config.codexReasoningEffort,
       verified: verifiedPollingChatModes.has(route.chatId),
       verifiedChatMode: verifiedPollingChatModes.get(route.chatId) || "",
     })),
@@ -1382,7 +1402,7 @@ async function resolveThreadForEvent(event) {
           threadTitle,
           cwd: config.codexWorkdir,
           model: config.codexModel,
-          effort: config.codexReasoningEffort,
+          effort: topicRoute.codexReasoningEffort || config.codexReasoningEffort,
           timeoutMs: config.codexTimeoutMs,
         });
         const setupId = stableTopicSetupId(event.chat_id, "chat", created.threadId);
@@ -1463,7 +1483,7 @@ async function resolveThreadForEvent(event) {
         threadTitle,
         cwd: config.codexWorkdir,
         model: config.codexModel,
-        effort: config.codexReasoningEffort,
+        effort: topicRoute.codexReasoningEffort || config.codexReasoningEffort,
         timeoutMs: config.codexTimeoutMs,
       });
       const setupId = stableTopicSetupId(event.chat_id, larkThreadId, created.threadId);
@@ -2328,6 +2348,7 @@ async function loadEventContext(event) {
 async function askCodex(event, context, options = {}) {
   const buildPrompt = options.buildPrompt || (() => options.prompt || buildCodexPrompt(event, context));
   const localImages = options.localImages || event.local_image_paths || [];
+  const routeReasoningEffort = config.topicChatRoutes.get(event.chat_id)?.codexReasoningEffort;
   const runTurn = ({ skipResume = false } = {}) => runWithActiveWriterRetry(() => runCodexAppServerTurn({
     command: codexCli.command,
     prefixArgs: codexCli.prefixArgs,
@@ -2337,7 +2358,7 @@ async function askCodex(event, context, options = {}) {
     localImages,
     cwd: config.codexWorkdir,
     model: config.codexModel,
-    effort: config.codexReasoningEffort,
+    effort: routeReasoningEffort || config.codexReasoningEffort,
     timeoutMs: config.codexTimeoutMs,
     skipResume,
   }), {

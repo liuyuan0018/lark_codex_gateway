@@ -132,6 +132,9 @@ function normalizeConfig(raw, configPath) {
   const topicRouteChatIds = topicChatRoutes.map((route, index) => {
     const chatId = typeof route?.chatId === "string" ? route.chatId.trim() : "";
     const skillName = typeof route?.skillName === "string" ? route.skillName.trim() : "";
+    const routeReasoningEffort = typeof route?.codexReasoningEffort === "string"
+      ? route.codexReasoningEffort.trim().toLowerCase()
+      : "";
     if (!CHAT_ID_PATTERN.test(chatId)) {
       throw new Error(`topicChatRoutes[${index}].chatId 不是有效的飞书 chat_id`);
     }
@@ -149,6 +152,14 @@ function normalizeConfig(raw, configPath) {
     }
     if (route?.sessionScope !== undefined && route.sessionScope !== "thread" && route.sessionScope !== "chat") {
       throw new Error(`topicChatRoutes[${index}].sessionScope 只支持 thread 或 chat`);
+    }
+    if (route?.codexReasoningEffort !== undefined && !CODEX_REASONING_EFFORTS.has(routeReasoningEffort)) {
+      throw new Error(
+        `topicChatRoutes[${index}].codexReasoningEffort 必须是 ${[...CODEX_REASONING_EFFORTS].join("、")} 之一`,
+      );
+    }
+    if (routeReasoningEffort) {
+      route.codexReasoningEffort = routeReasoningEffort;
     }
     return chatId;
   });

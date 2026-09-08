@@ -155,7 +155,7 @@ Start with [`config.example.json`](config.example.json). The most important fiel
 | `allowedChatIds` | Ordinary chats that may enter through explicit Bot events. |
 | `commandSenderIds` | Users whose explicit `@Bot` requests must receive a Codex response. |
 | `chatRoutes` | Fixed ordinary-chat bindings to existing Codex task UUIDs. |
-| `topicChatRoutes` | Threaded polling configuration, including optional regular-chat opt-in, project Skill, initialization prompt, reply approval policy, and `sessionScope` (`thread` by default or `chat` to share one Codex task across the whole chat). |
+| `topicChatRoutes` | Threaded polling configuration, including optional regular-chat opt-in, project Skill, initialization prompt, reply approval policy, `sessionScope` (`thread` by default or `chat` to share one Codex task across the whole chat), and a per-route `codexReasoningEffort` override. |
 | `pollUserMessages` | Enables user-identity polling for `topicChatRoutes` only. It accepts user and external-app messages while excluding this gateway Bot's own messages. |
 | `pollIntervalMs` | Delay between topic-chat polls; defaults to `5000`. |
 | `groupContextMessages` | Maximum earlier messages attached when the current message explicitly requests history. |

@@ -28,6 +28,7 @@
       "replyApprovalRequired": true,
       "allowRegularChat": false,
       "sessionScope": "thread",
+      "codexReasoningEffort": "medium",
       "skillName": "replace-with-project-skill-name",
       "initializationPrompt": "Describe only the assistant identity and the scope of one topic."
     }

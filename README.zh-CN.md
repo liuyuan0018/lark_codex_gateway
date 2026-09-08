@@ -155,7 +155,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
 | `allowedChatIds` | 可以通过明确 Bot 事件进入网关的普通群。 |
 | `commandSenderIds` | 这些用户明确 `@Bot` 时，Codex 必须处理并回复。 |
 | `chatRoutes` | 把普通群固定绑定到当前机器已有的 Codex 任务 UUID。 |
-| `topicChatRoutes` | 配置线程化轮询、普通群显式开关、项目 Skill、初始化提示词、回复授权策略和 `sessionScope`（默认 `thread`，可设为 `chat` 共享整个群的任务）。 |
+| `topicChatRoutes` | 配置线程化轮询、普通群显式开关、项目 Skill、初始化提示词、回复授权策略、`sessionScope`（默认 `thread`，可设为 `chat` 共享整个群的任务），以及路由级 `codexReasoningEffort` 覆盖。 |
 | `pollUserMessages` | 只为 `topicChatRoutes` 启用用户身份轮询；接收用户和其他应用消息，并排除网关 Bot 自己的消息。 |
 | `pollIntervalMs` | 话题群轮询间隔，默认 `5000` 毫秒。 |
 | `groupContextMessages` | 当前消息明确要求读取历史时，最多附带多少条更早的消息。 |

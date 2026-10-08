@@ -198,6 +198,7 @@ function normalizeConfig(raw, configPath) {
     threadId,
     codexWorkdir: path.resolve(expandHome(codexWorkdirValue)),
     codexModel,
+    codexCliCommand: typeof raw.codexCliCommand === "string" ? raw.codexCliCommand.trim() : "auto",
     codexReasoningEffort,
     stateDir: stateDirValue ? path.resolve(expandHome(stateDirValue)) : defaultStateDirectory(),
     dashboardHost: typeof raw.dashboardHost === "string" && raw.dashboardHost.trim()
@@ -325,6 +326,7 @@ export function gatewayEnvironment(config, fingerprint, configPath = "") {
   return {
     CODEX_THREAD_ID: config.threadId,
     CODEX_WORKDIR: config.codexWorkdir,
+    CODEX_CLI_COMMAND: config.codexCliCommand || "auto",
     CODEX_MODEL: config.codexModel,
     CODEX_REASONING_EFFORT: config.codexReasoningEffort,
     GATEWAY_STATE_DIR: config.stateDir,

@@ -151,6 +151,7 @@ codex plugin add lark-codex-gateway@lark-codex-gateway
 | --- | --- |
 | `codexWorkdir` | Codex 使用的项目目录，必须存在于当前机器。 |
 | `codexModel` | 传给 Codex App Server 的模型。 |
+| `codexCliCommand` | 默认 `auto`。Windows 每次启动 Codex 子进程前，优先选择正在运行的桌面版可执行文件，再检查安装目录中的版本并执行 `--version`，选择版本号最高的可运行文件；无版本目录候选时检查旧固定入口，仍不可用时尝试 npm 入口。旧配置中的桌面版路径也会重新定位；其他自定义命令保持原样。仅进程启动报 `ENOENT` 时重新定位并重试一次，不重放已经开始的请求。启动日志记录实际路径和版本。 |
 | `codexReasoningEffort` | 新建和恢复任务时使用的推理等级。 |
 | `allowedChatIds` | 可以通过明确 Bot 事件进入网关的普通群。 |
 | `commandSenderIds` | 这些用户明确 `@Bot` 时，Codex 必须处理并回复。 |

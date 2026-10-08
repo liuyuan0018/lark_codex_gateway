@@ -151,6 +151,7 @@ Start with [`config.example.json`](config.example.json). The most important fiel
 | --- | --- |
 | `codexWorkdir` | Project directory used by Codex. Must exist on the current machine. |
 | `codexModel` | Model passed to Codex App Server. |
+| `codexCliCommand` | Defaults to `auto`. Before each Windows Codex child process starts, prefer a running desktop executable, then probe installed versions with `--version` and select the highest runnable version. If no versioned candidate works, check the legacy fixed executable, then the npm entry point. Previously configured desktop paths are rediscovered too; other custom commands are preserved. Rediscover and retry once only on spawn `ENOENT`, never replay an already started request. Startup logs include the selected path and version. |
 | `codexReasoningEffort` | Reasoning effort used for new and resumed turns. |
 | `allowedChatIds` | Ordinary chats that may enter through explicit Bot events. |
 | `commandSenderIds` | Users whose explicit `@Bot` requests must receive a Codex response. |

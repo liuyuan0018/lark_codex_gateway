@@ -289,11 +289,7 @@ const larkCli = resolveCliInvocation(
   path.join("node_modules", "@larksuite", "cli", "scripts", "run.js"),
   "LARK_CLI_COMMAND",
 );
-const codexCli = resolveCliInvocation(
-  "codex",
-  path.join("node_modules", "@openai", "codex", "bin", "codex.js"),
-  "CODEX_CLI_COMMAND",
-);
+const codexCli = { command: process.env.CODEX_CLI_COMMAND || "auto", prefixArgs: [] };
 
 if (config.enableDocComments && !THREAD_ID_PATTERN.test(config.threadId)) {
   throw new Error(`CODEX_THREAD_ID 不是有效的 UUID: ${config.threadId}`);

@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { spawnCodexAppServer } from "./codex_executable.mjs";
 
 import { prepareCodexEnvironment } from "./codex_environment.mjs";
 
@@ -65,9 +65,8 @@ async function runCodexAppServer(options) {
 
   const codexEnvironment = await prepareCodexEnvironment(process.env);
 
-  const child = spawn(
-    command,
-    [...prefixArgs, "app-server", "--listen", "stdio://"],
+  const child = await spawnCodexAppServer(
+    { command, prefixArgs },
     {
       cwd,
       env: codexEnvironment.environment,
